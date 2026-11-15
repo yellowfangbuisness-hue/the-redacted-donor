@@ -62,7 +62,7 @@ const html = template.replace('__CSP__', () => policy).replace('__CSS__', () => 
   '__BUNDLE__',
   () => bundle,
 ).replace('</head>', () => `<!-- Embedded Three.js license\n${license.replaceAll('--', '—')}-->\n</head>`);
-for (const file of ['index.html', 'mars-rehearsal.html']) await writeFile(file, html);
+await writeFile('index.html', html);
 console.log(`Built offline game (${Buffer.byteLength(html).toLocaleString()} bytes, ${Object.keys(recorded).length} recorded sounds).`);
 // Hand tracking's own files (the MediaPipe code, its WebAssembly and the hand model) packed into one script that sits
 // beside index.html. The game loads it when hand tracking is turned on, so tracking starts at once and needs no
