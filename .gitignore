@@ -1,5 +1,0 @@
-.DS_Store
-# machine-specific pointers written by graphify
-graphify-out/.graphify_python
-graphify-out/.graphify_root
-node_modules/
