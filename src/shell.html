@@ -10,9 +10,10 @@
     <div class="title-content"><div class="logo-mark" aria-hidden="true"><i></i><span>Detective adventure</span></div>
       <div class="imprint"><span class="deco-mark" aria-hidden="true">✦</span><span>A noir investigation</span><i></i></div>
       <h1><span class="the">The</span><span class="redact">Redacted</span><span>Donor</span></h1>
+      <p class="title-note">A detective story about organ trafficking: how people are recruited, matched and sold. No gore.</p>
       <div class="menu-buttons"><button id="begin" class="menu-primary"><span id="beginText">Begin the investigation</span></button><button id="records" class="menu-link">Records</button><button id="account" class="menu-link">Sign in</button><button id="controls" class="menu-link">Controls</button><button id="newGame" class="menu-link" hidden>Start a new investigation</button></div>
       <button id="comfortToggle" class="comfort-toggle veteran-toggle" aria-pressed="false"><span class="comfort-name">Veteran Investigator Mode <b>Off</b></span><small>Larger text, a closer view of every object, buttons instead of drags, extra time before the guard spots you</small></button>
-      <button id="spatialToggle" class="comfort-toggle spatial-toggle" aria-pressed="false"><span class="comfort-name">Spatial Hand Tracking <b>Off</b></span><small>Webcam required. Pinch to grab, turn and pull. Mouse and keyboard keep working.</small></button><p id="spatialNote" role="status" hidden></p>
+      <div class="spatial-row"><button id="spatialToggle" class="comfort-toggle spatial-toggle" aria-pressed="false"><span class="comfort-name">Spatial Hand Tracking <b>Off</b></span><small>Webcam required. Close your hand to grab things and move it to look round. Walking stays on the keyboard. Press H at any time to switch it on or off.</small></button><span id="spatialSetup" hidden><button id="spatialCam" type="button">Switch camera</button><button id="spatialCal" type="button">Recalibrate</button><button id="spatialTut" type="button">Tutorial</button></span></div><p id="spatialNote" role="status" hidden></p>
     </div>
     <button id="titleSound" class="sound-button" aria-label="Toggle sound"><span class="sound-bars"><i></i><i></i><i></i><i></i></span><span>Sound on</span></button>
     <p id="bootError" role="alert" hidden></p>
@@ -32,7 +33,6 @@
     <div id="prompt" hidden><kbd class="mouse" aria-label="Click"><svg viewBox="0 0 16 22" width="12" height="16" aria-hidden="true"><rect x="1" y="1" width="14" height="20" rx="7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 1v8M1.5 9h13" stroke="currentColor" stroke-width="1.6"/><rect x="1.8" y="1.8" width="5.4" height="6.6" rx="2.5" fill="currentColor"/></svg></kbd><span></span></div>
     <div id="held" hidden>Holding <b></b>. Hold the mouse button to aim, release to throw.</div>
     <div id="caption" role="status" hidden><b></b><span></span></div>
-    <div id="spatialView" hidden><canvas width="176" height="132" aria-hidden="true"></canvas><span id="spatialStatus" role="status"></span></div>
     <div id="hands" hidden><b id="handsTitle"></b><span id="handsHint"></span><span id="handsSay" role="status"></span><div id="handsVet"></div><button id="handsBack" class="text-btn" type="button">Step back <kbd>Esc</kbd></button></div>
     <div class="bottom-keys"><button id="hudJournal"><kbd>J</kbd> Journal</button><button id="hudKit" hidden><kbd>B</kbd> Kit</button><button id="hudPause"><kbd>Esc</kbd> Pause</button></div>
     <div id="touchControls"><div id="stick"><i></i></div><button id="touchCrouch" aria-label="Crouch">↓</button><button id="touchUse" aria-label="Interact">E</button></div>
@@ -41,6 +41,9 @@
   <div id="fade" aria-hidden="true"></div>
   <div id="chapterCard" hidden><small></small><strong></strong><i></i></div>
   <div id="inspectHud" hidden><div><small>Under the desk lamp</small><h2></h2><p></p><div class="exposure"><i></i></div><b></b></div><div class="inspect-controls"><button id="turnLeft" aria-label="Rotate left">←</button><span>Drag to turn it</span><button id="turnRight" aria-label="Rotate right">→</button><button id="turnOver">Turn over <kbd>F</kbd></button><button id="leaveInspect">Set down <kbd>Esc</kbd></button></div></div>
+  <div id="spatialView" hidden><canvas width="352" height="264" aria-hidden="true"></canvas><span id="spatialStatus" role="status"></span></div>
+  <div id="spatialCard" role="status" hidden><small id="spatialStep"></small><b id="spatialTitle"></b><p id="spatialText"></p><div class="bar"><i id="spatialBar"></i></div><button id="spatialSkip" type="button">Skip <kbd>Esc</kbd></button></div>
   <div id="overlay" hidden><section id="panel" role="dialog" aria-modal="true" aria-labelledby="panelTitle"><div id="panelBody"></div></section></div>
+  <div id="handPointer" aria-hidden="true" hidden></div>
   <div id="sr" class="sr" aria-live="polite"></div>
 </main><script type="module">__BUNDLE__</script></body></html>

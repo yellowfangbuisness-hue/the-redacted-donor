@@ -1,4 +1,6 @@
-# Voice lines to record
+# Voice lines
+
+**Status (2026-11-15): recorded and in the game.** 54 takes are in `src/audio/voice/`. Still missing: `narr-02`, `mateo-17`, `mateo-18` (new, holding cell) and the optional object lines in section 5; the game skips those quietly.
 
 Every line the game shows as speech or a character's thought, grouped by who says it. Each line has an ID: save the take as `src/audio/voice/<id>.mp3` so it can be wired in later. Lines in *italics* are optional narration.
 
@@ -48,6 +50,7 @@ The three choice buttons don't have spoken lines in the game yet; `mateo-01` to 
 | `mateo-15` | "I do not consent." | Writes the real signature |
 | `mateo-16` | "The hours slip by." | Winds the watch forward |
 | `mateo-17` | *(hurt: a pained gasp, 2–3 takes)* | Caught by the guard |
+| `mateo-18` | "I'm not the first. They fought back, right behind the mirror. If I don't get the radio working in the next room, I end up in a cooler just like them." | Looks at the cracked glass in the holding cell. Quiet, shaken. |
 
 ## 3. Detective, 12 hours later
 | id | line | when |
@@ -95,7 +98,7 @@ What the detective says when examining the 12 props. Record if you want every ob
 |---|---|---|
 | `obj-cabinet` | Archive cabinet | "Twelve files, all cancelled the same afternoon as Mateo's." |
 | `obj-shelf` | Records shelf | "'Generous compensation for a life-changing gift.' No hospital named." |
-| `obj-bin` | Wastepaper basket | "A telegram. 'Buyer lands Thursday. Match must be ready.'" |
+| `obj-bin` | Wastepaper basket | "A tele gram. 'Buyer lands Thursday. Match must be ready.'" |
 | `obj-coats` | Coat rack | "A one-way ferry stub from Pier nine, punched for midnight." |
 | `obj-bench` | Waiting bench | "A child's drawing of a boat. Signed 'for papa'." |
 | `obj-records` | Patient records | "Blood types and tissue panels. No names, no next of kin." |

@@ -31,20 +31,25 @@ import { GameAudio } from './sound.js';
 import { cloud } from './cloud.js';
 import { LEGAL_DATE, PRIVACY, TERMS } from './legal.js';
 import { QUIZ, DEBRIEF, MESSAGE } from './debrief.js';
-import { createSpatial, drawHands } from './spatial.js';
+import { Calibration, createSpatial, drawHands } from './spatial.js';
 
 const $ = (id) => document.getElementById(id), clamp = THREE.MathUtils.clamp;
 const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(61, 1, .045, 40);
 camera.rotation.order = 'YXZ';
 const factory = new InkTextureFactory(),
   room = buildRoom(scene, factory),
-  props = furnish(scene, factory, room),
+  props = furnish(scene, factory, room, camera),
   annex = buildAnnex(scene, factory);
-const stealth = createStealth({ scene, guardTexture: props.guardTexture, footprints, tallFootprints,
-  routes: { room1: [[3.75,.1],[2.9,2.7],[.4,3.9],[2.9,2.7]], room2: [[-3.2,7.6],[-.2,7.6],[-.2,9.45],[-3.2,9.45]], room3: [[-2.4,11.2],[2.6,11.2],[2.6,13.2],[-1.8,13.2]] },
+// What each throwable is called while held, and the sound it makes when it lands.
+const THROWN = { beaker: { name: 'a glass beaker', sound: 'shatter' }, paperweight: { name: 'a brass paperweight', sound: 'clank' }, bottle: { name: 'a medicine bottle', sound: 'shatter' },
+  mug: { name: 'an enamel mug', sound: 'clank' }, ashtray: { name: 'a glass ashtray', sound: 'clink' }, ledger: { name: 'a ledger', sound: 'thud' } };
+const stealth = createStealth({ scene, guardSheet: props.guardSheet, footprints, tallFootprints,
+  routes: { room1: [[3.75,.1],[2.9,2.7],[.4,3.9],[2.9,2.7]], room2: [[-3.2,7.6],[-.2,7.6],[-.2,9.45],[-3.2,9.45]], room3: [[-2.4,11.2],[1.08,11.2],[1.08,12.9],[2.6,13.2],[-1.8,13.2]] },
   throwables: [{id:'b1',kind:'beaker',pos:[-3.45,.92,6.75]},{id:'b2',kind:'beaker',pos:[-2.95,.92,6.95]},{id:'p1',kind:'paperweight',pos:[-.65,.92,7.05]},
-    {id:'p2',kind:'paperweight',pos:[-.35,.78,12.15]},{id:'p3',kind:'paperweight',pos:[.3,.78,12.35]},{id:'b3',kind:'beaker',pos:[2.1,.78,14.0]}],
-  onCrash: (p, kind) => { audio.sfx(kind==='beaker'?'shatter':'clank'); notify('Crash', 'The guard goes to look.', 2.2); } });
+    {id:'p2',kind:'paperweight',pos:[-.35,.78,12.15]},{id:'p3',kind:'paperweight',pos:[.3,.78,12.35]},{id:'b3',kind:'beaker',pos:[2.1,.78,14.0]},
+    {id:'m1',kind:'mug',pos:[1.45,.785,8.3]},{id:'o1',kind:'bottle',pos:[3.15,.78,9.9]},{id:'l1',kind:'ledger',pos:[-.05,.78,12.42],ry:.3},{id:'m2',kind:'mug',pos:[3.2,.78,13.88]},
+    {id:'a1',kind:'ashtray',pos:[1.75,1.075,1.25]},{id:'l2',kind:'ledger',pos:[-1.25,.55,-2.5],ry:-.2},{id:'o2',kind:'bottle',pos:[-4.0,1.995,-1.62]}],
+  onCrash: (p, kind) => { audio.sfx(THROWN[kind].sound); notify('Crash', 'The guard goes to look.', 2.2); } });
 // Lit materials (figures, props, annex furniture) share a warm sky fill and a key light from the window side.
 scene.add(new THREE.HemisphereLight('#f4e0bb', '#3b2d20', 2.6));
 const keyLight = new THREE.DirectionalLight('#ffe4b8', 1.4);
@@ -83,50 +88,255 @@ const RESCUE_STAGES = ['glass', 'radio'];
 function rescueTimeout(){
   closeModal();state.rescueLeft=comfort?480:240;state.stage='glass';state.score-=50;
   cutscene({at:locations.radio,kicker:'Four o’clock',title:'Too late',line:'The surgery has begun. Go back to the dispatch door and try again.',fx:'neg',shake:true,hold:3,mode:'cut',cue:'hurt',then(){spawnForStage();scoreHUD();updateHud();persist();}});}
-// ── Spatial hand tracking (optional). inputMode says which device is driving; the mouse keeps working in both. ──
+// ── Spatial hand tracking (optional). inputMode says which device is driving; the mouse and keyboard keep working in both. ──
 const spatial = createSpatial();
-let inputMode = 'mouse', handCursor = null;
+spatial.onlost = () => { setSpatial(false); spatialNote('The camera stopped. Hand tracking is off.'); };
+const TUTORIAL_KEY = 'redacted-donor.hands.tutorial';
+const HAND_HELP = 'Hand tracking is on. Close your hand on something to grab it, open it to let go. Move your hand toward a screen edge to look round; a short dip of the hand looks down. Walk with the keyboard. Press H to turn hand tracking off.';
+// guide: the hand setup or hand tutorial now on screen. While one runs, the game underneath is frozen.
+let inputMode = 'mouse', guide = null, navFree = false, lookReady = false, spatialHeld = false, handUse = false, domHeld = null, scrollDrag = null, hoverEl = null;
+// What the hands ask of move(): turning the view only. Walking stays on the keyboard. Zero unless hand tracking is on and free to steer.
+const handNav = { yaw: 0, pitch: 0 };
+// How fast the hands turn the view: the player's choice in Pause.
+const HAND_SPEEDS = [['Slow', .6], ['Normal', 1], ['Fast', 1.5]];
+let handSpeed = HAND_SPEEDS.findIndex(([n]) => n === getStored('redacted-donor.hands.speed')); if (handSpeed < 0) handSpeed = 1;
+const stillNav = () => { handNav.yaw = handNav.pitch = 0; };
+const hideLimbs = () => { hands.limb(0, null); hands.limb(1, null); };
+function setGuide(g) { guide = g; $('game').dataset.guide = g ? (g.cal ? 'cal' : 'tut') : ''; }
+const setText = (id, text) => { const el = $(id); if (el.textContent !== text) el.textContent = text; };
 async function setSpatial(on) {
+  if (setSpatial.busy) return;   // a start is still loading the camera and model: a second press would open a second camera
   const label = (text, pressed) => { for (const b of document.querySelectorAll('.spatial-toggle')) { b.setAttribute('aria-pressed', String(pressed)); b.querySelector('b').textContent = text; } };
-  if (!on) { spatial.stop(); inputMode = 'mouse'; label('Off', false); $('spatialView').hidden = true; if (handCursor) handCursor.visible = false; return; }
+  if (!on) { endGuide(); spatial.stop(); inputMode = 'mouse'; label('Off', false); for (const id of ['spatialView', 'handPointer', 'spatialSetup']) $(id).hidden = true; hideLimbs(); handRelease(); stillNav(); if (started) notify('Hand tracking', 'Off. Mouse and keyboard play as before.', 3); return; }
   label('Starting…', false);
-  try { await spatial.start(); } catch (e) { inputMode = 'mouse'; label('Off', false); spatialNote(e.message); return; }
-  inputMode = 'spatial'; label('On', true); $('spatialView').hidden = false;
-  spatialNote('Hand tracking is on. Pinch to grab; push a fist at the camera to bang on the glass.');
+  setSpatial.busy = true;
+  try { await spatial.start(); } catch (e) { inputMode = 'mouse'; label('Off', false); spatialNote(e.message); return; } finally { setSpatial.busy = false; }
+  inputMode = 'spatial'; label('On', true); $('spatialView').hidden = false; $('spatialSetup').hidden = false;
+  if (spatial.profile.calibrated) spatialNote(HAND_HELP); else startCalibration();
 }
 // A message that shows on the title screen as well as in the game.
+// Next camera in the list (the built-in one, an iPhone through Continuity Camera, a USB webcam), remembered for next time.
+async function nextCamera() {
+  const list = await spatial.cameras(), now = spatial.camera;
+  if (list.length < 2) { spatialNote(list.length ? 'Only one camera was found: ' + list[0].label + '.' : 'No camera was found.'); return; }
+  const next = list[(list.findIndex((c) => c.id === now?.id) + 1) % list.length];
+  try { await spatial.useCamera(next.id); spatialNote('Camera: ' + (spatial.camera?.label || next.label) + '. Recalibrate if the view is very different.'); }
+  catch { spatialNote('That camera could not be opened. Staying with the last one.'); }
+}
 function spatialNote(text) { if (started) notify('Hand tracking', text, 5); const el = $('spatialNote'); el.textContent = text; el.hidden = false; clearTimeout(spatialNote.t); spatialNote.t = setTimeout(() => { el.hidden = true; }, 6000); }
-const handRay = new THREE.Vector3();
+const handRay = new THREE.Vector3(), tutDir = new THREE.Vector3(), handAt = { x: 0, y: 0 };
+// Let go of whatever the hands were holding (the hand left the picture, or tracking stopped).
+function handRelease() {
+  if (spatialHeld) { hands.pointer('up', handAt.x, handAt.y, true); spatialHeld = false; }
+  if (handUse) heldUse = handUse = false;
+  if (aiming?.hand) { stealth.stopAim(); aiming = null; }
+  domHeld = scrollDrag = null; hoverEl?.classList.remove('hand-hover'); hoverEl = null;
+}
+// Anything on the page a grab can press, and the events a press sends it.
+const CLICKABLE = 'button, a[href], input, select, textarea, label, summary, [data-action], [role=button]';
+const fire = (el, type, x, y) => el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 91, pointerType: 'pen', isPrimary: true, button: 0 }));
+function scroller(el) { for (let p = el; p && p !== document.body; p = p.parentElement) if (p.scrollHeight > p.clientHeight + 4 && /auto|scroll/.test(getComputedStyle(p).overflowY)) return p; return null; }
+function handStatus(f) {
+  const s = spatial.stats, speed = s.rate ? `${s.rate} a second, ${s.cost} ms${s.engine === 'background' ? ', background' : ''}` : '';
+  if (s.dark) return 'Too dark to see your hands: add light';
+  if (f?.tangled) return 'Hands are touching: move them apart';
+  if (!f || !f.hands.length) return ['No hands in view', speed].filter(Boolean).join(' · ');
+  const P = f.hands.find((h) => h.role === 'point'), M = f.hands.find((h) => h.role === 'other');
+  return [P && 'Hand: ' + (f.two ? 'both grabbing' : P.grab ? 'grabbing' : 'open'), M && 'Other hand: ' + (M.grab ? 'grabbing' : 'open'), f.pointer && `${Math.round(f.pointer.x * 100)}, ${Math.round(f.pointer.y * 100)}`, speed].filter(Boolean).join(' · ');
+}
+// Runs every frame while hand tracking is on, title screen included. Order matters: two-hand turns, then anything
+// on the page (menus, HUD buttons), then an open puzzle, then looking around the room.
+// The view leans a little with the hand, like looking round the edge of a window: `lean` follows the pointer (-.5..5).
+const lean = { x: 0, y: 0, tx: 0, ty: 0 }, leanBy = new THREE.Vector3();
+const NO_HANDS = { n: 0, hands: [], pointer: null, grab: false, down: false, up: false, bang: false, two: null, look: { x: 0, y: 0 } };
 function driveSpatial(now) {
+  spatial.twoHands = !!inspect || hands.kind === 'read';   // elsewhere a second, curled hand must not block the first
   const f = spatial.update(now);
-  drawHands($('spatialView').firstElementChild, f);
-  $('spatialStatus').textContent = !f || !f.n ? 'No hands in view' : `${f.n} hand${f.n > 1 ? 's' : ''} · ${f.two ? 'two-hand pinch' : f.pinch ? 'pinch' : f.hands.some((h) => h.fist) ? 'fist' : 'open'} · ${Math.round(f.pointer.x * 100)}, ${Math.round(f.pointer.y * 100)}`;
-  if (!handCursor) { handCursor = new THREE.Mesh(new THREE.SphereGeometry(.011, 16, 12), new THREE.MeshBasicMaterial({ color: '#ffb347', transparent: true, opacity: .9, depthTest: false })); handCursor.renderOrder = 999; scene.add(handCursor); }
-  handCursor.visible = !!(f && f.pointer) && started;
-  if (!f || !f.pointer) return;
-  const b = canvas.getBoundingClientRect(), x = b.left + f.pointer.x * b.width, y = b.top + f.pointer.y * b.height;
-  // The amber marker sits on the puzzle's surface, or 70 cm ahead in the open room, and swells while pinching.
-  const on = hands.active && hands.worldAt(x, y);
-  if (on) handCursor.position.copy(on);
-  else { handRay.set(f.pointer.x * 2 - 1, -(f.pointer.y * 2 - 1), .5).unproject(camera).sub(camera.position).normalize(); handCursor.position.copy(camera.position).addScaledVector(handRay, .7); }
-  handCursor.scale.setScalar(f.pinch || f.two ? 1.7 : 1); needsDraw = true;
-  if (hands.active) {                       // a puzzle is open: the pinch is the mouse button
-    if (f.two) { if (spatialHeld) { hands.pointer('up', x, y, true); spatialHeld = false; } hands.twist(f.two.dAngle, f.two.dScale); return; }
-    if (f.down) { hands.pointer('down', x, y, true); spatialHeld = true; }
-    else if (f.up && spatialHeld) { hands.pointer('up', x, y, true); spatialHeld = false; }
-    else hands.pointer('move', x, y, true);
+  lean.tx = f?.pointer && !f.tangled ? f.pointer.x - .5 : 0; lean.ty = f?.pointer && !f.tangled ? f.pointer.y - .5 : 0;
+  drawHands($('spatialView').firstElementChild, f, spatial.profile, guide?.cal ? spatial.video : null);   // setup shows what the camera sees
+  setText('spatialStatus', handStatus(f));
+  if (guide?.cal) calibrate(f || NO_HANDS, now / 1000);   // the setup card shows at once, before the camera's first picture has been read
+  pointerInput(f);
+}
+// A pointer that can grab, press and drag: the tracked hand, or a controller's stick with its A button (drivePad).
+// f is a gesture frame ({ pointer, grab, down, up, two, bang, look, hands }) or null when there is no pointer.
+function pointerInput(f) {
+  const ptr = $('handPointer'), free = navFree;
+  stillNav(); navFree = false;
+  if (!f || !f.pointer) { ptr.hidden = true; hideLimbs(); handRelease(); return; }
+  const b = $('game').getBoundingClientRect(), x = handAt.x = b.left + f.pointer.x * b.width, y = handAt.y = b.top + f.pointer.y * b.height;
+  ptr.hidden = false; ptr.style.transform = `translate(${x - b.left}px,${y - b.top}px)`; ptr.classList.toggle('down', f.grab || !!f.two);
+  // The player's hands, drawn in the scene where they hold them: over an open puzzle, or in front of them in the room.
+  // Menus, cutscenes and setup show the flat pointer only.
+  const point = f.hands.find((h) => h.role === 'point'), second = f.hands.find((h) => h.role === 'other');
+  if ((modal && modal !== 'hands') || guide?.cal || cine || (!started && !guide?.tut)) hideLimbs();
+  else { hands.limb(0, point, x, y); hands.limb(1, second || null, second ? b.left + second.screen.x * b.width : 0, second ? b.top + second.screen.y * b.height : 0); needsDraw = true; }
+  // Two grabbing hands turn whatever is being examined, wherever the pointer happens to be.
+  if (f.two && (hands.active || inspect)) {
+    if (spatialHeld) { hands.pointer('up', x, y, true); spatialHeld = false; }
+    if (hands.active) { hands.twist(f.two.dAngle, f.two.dScale); if (guide?.tut && guide.i === 3 && (guide.twist += Math.abs(f.two.dAngle)) > .6) tutPass(); }
+    else { inspect.angle -= f.two.dAngle; inspect.tilt = clamp(inspect.tilt + f.two.dTilt + (f.two.dScale - 1) * 1.6, -.85, .85); }
+    needsDraw = true; return;
+  }
+  // Menus, HUD buttons and anything else on the page: a grab is a click, a grab-and-drag scrolls a long page.
+  const el = document.elementFromPoint(x, y), any = el?.closest(CLICKABLE), hit = guide?.cal && !any?.closest('#spatialCard') ? null : any, menu = (modal && modal !== 'hands') || (!started && !guide?.tut);
+  if (hit !== hoverEl) { hoverEl?.classList.remove('hand-hover'); hoverEl = hit && !hit.disabled ? hit : null; if (hoverEl) { hoverEl.classList.add('hand-hover'); fire(hoverEl, 'pointerover', x, y); } }
+  if (domHeld || scrollDrag || hoverEl || menu) {
+    if (f.down) { if (hoverEl) { domHeld = hoverEl; fire(domHeld, 'pointerdown', x, y); if (/INPUT|TEXTAREA|SELECT/.test(domHeld.tagName)) domHeld.focus(); } else { const s = el && scroller(el); if (s) scrollDrag = { el: s, y }; } }
+    else if (f.up) { if (domHeld) { fire(domHeld, 'pointerup', x, y); if (domHeld.isConnected && !domHeld.disabled) domHeld.click(); } domHeld = scrollDrag = null; }   // the press counts wherever the hand has drifted to: closing the fingers always moves it a little
+    else if (scrollDrag) { scrollDrag.el.scrollTop -= y - scrollDrag.y; scrollDrag.y = y; }
     return;
+  }
+  if (guide?.cal) return;                    // setup only watches
+  if (cine) { if (f.down) skipCine(); return; }
+  if (!started && !guide?.tut) return;
+  // A grab or a release happens where the hand was holding still (f.at), not where closing or opening the fingers left the pointer.
+  const where = (q) => (q ? [b.left + q.x * b.width, b.top + q.y * b.height] : [x, y]);
+  if (hands.active) {                        // a puzzle is open: closing the hand takes hold, opening it lets go; a fist push strikes glass
+    if (f.bang && hands.kind === 'smash') { const cx = b.left + b.width / 2, cy = b.top + b.height / 2; hands.pointer('down', cx, cy, true); hands.pointer('up', cx, cy, true); if (guide?.tut && guide.i === 4) tutPass(); }
+    else if (f.down) { hands.pointer('down', ...where(f.at), true); spatialHeld = true; }
+    else if (f.up && spatialHeld) { const at = where(f.at); hands.pointer('move', ...at, true); hands.pointer('up', ...at, true); spatialHeld = false; }
+    else { if (f.roll && spatialHeld) hands.turn(f.roll * 2); hands.pointer('move', x, y, true); }   // a closed hand turning at the wrist turns what it holds, one for one on the dial face
+    return;                                  // no walking or turning away from a puzzle
   }
   spatialHeld = false;
-  if (inspect) {                            // a document held up to the lamp: two pinching hands turn and tilt it
-    if (f.two) { inspect.angle -= f.two.dAngle; inspect.tilt = clamp(inspect.tilt + (f.two.dScale - 1) * 1.6, -.85, .85); }
-    return;
+  if (inspect || (!modeActive() && !guide?.tut)) return;
+  // Free in the room. The hand turns the head once it passes its comfort zone; the feet stay on the keyboard.
+  // A grab holds the view still, so taking hold of something never turns you away from it.
+  // After a menu, a puzzle or setup, the hand must come back to rest once before it steers again,
+  // so the view never lurches because the hand happened to be out at the edge.
+  if (!free) lookReady = false;
+  navFree = true;
+  if (!f.grab) {
+    if (!f.look.x && !f.look.y) lookReady = true;
+    if (lookReady) { const k = HAND_SPEEDS[handSpeed][1]; handNav.yaw = -f.look.x * (comfort ? 1.0 : 1.3) * k; handNav.pitch = -f.look.y * .8 * k; }
   }
-  if (!modeActive()) return;
+  if (guide) return;                          // the practice room has nothing to pick up
   if (f.bang && state.stage === 'street' && state.pounds < 3 && inReach('street')) interact('street');   // a fist on the glass
-  else if (f.down) interact();              // pinch = take hold of whatever you are looking at
+  else if (f.down) { if (stealth.held() && !focus) aiming = { power: 0, hand: true }; else { heldUse = handUse = true; interact(); } }   // grab = E; held grab = held E
+  else if (f.up) { if (handUse) heldUse = handUse = false; if (aiming?.hand) { stealth.release(camera, Math.max(aiming.power, clamp((f.flick || 0) / 2.2, 0, 1))); stealth.stopAim();   // a flick of the hand throws as far as a long hold
+    aiming = null; audio.sfx('whoosh'); showHeld(null); } }
 }
-let spatialHeld = false;
+// ── Controller (standard gamepad layout). ──
+// Free in the room: left stick walks, right stick looks, and the buttons press the same keys the keyboard does.
+// With the title screen, a menu, a cutscene or a puzzle up: the sticks move the on-screen pointer, A presses and drags
+// with it (through pointerInput, like a tracked hand), B or Start goes back.
+const PAD_KEYS = [[0, 'KeyE'], [1, 'KeyC'], [2, 'KeyJ'], [3, 'KeyB'], [4, 'KeyF'], [5, 'KeyG'], [7, 'KeyG'], [8, 'KeyO'], [9, 'Escape']];
+const pad = { f: 0, r: 0, yaw: 0, pitch: 0, run: false, x: .5, y: .5, a: false, back: false, used: false, pointing: false, held: new Set(), last: 0 };
+const padKey = (type, code) => window.dispatchEvent(new KeyboardEvent(type, { code, key: code, bubbles: true, cancelable: true }));
+function drivePad(now) {
+  const dt = Math.min(.1, (now - (pad.last || now)) / 1000); pad.last = now;
+  const g = [...(navigator.getGamepads?.() || [])].find((q) => q && q.connected);
+  pad.f = pad.r = pad.yaw = pad.pitch = 0; pad.run = false;
+  const axis = (i) => { const v = g?.axes[i] || 0, m = Math.abs(v); return m < .2 ? 0 : Math.sign(v) * ((m - .2) / .8) ** 1.5; }, on = (i) => !!g?.buttons[i]?.pressed;
+  const lx = axis(0), ly = axis(1), rx = axis(2), ry = axis(3);
+  if (g && (lx || ly || rx || ry || g.buttons.some((q) => q.pressed))) pad.used = true;
+  // The pointer is for anything that is not walking about: it only appears once the controller has been touched.
+  const pointing = !!g && pad.used && inputMode !== 'spatial' && (!started || !!modal || hands.active || !!cine || !!guide);
+  // Buttons act as keys while roaming; in pointer mode only the ones that go back.
+  const want = new Set(PAD_KEYS.filter(([i, code]) => on(i) && (!pointing || code === 'Escape')).map(([, code]) => code));
+  if (pointing && on(1)) want.add('Escape');
+  if (pad.pointing && !pointing) { for (const code of pad.held) padKey('keyup', code); pad.held = new Set(want); }   // B that closed a menu must not also toggle crouch
+  for (const code of want) if (!pad.held.has(code)) padKey('keydown', code);
+  for (const code of pad.held) if (!want.has(code)) padKey('keyup', code);
+  pad.held = want;
+  if (pointing) {
+    const dx = lx + rx + (on(15) ? .6 : 0) - (on(14) ? .6 : 0), dy = ly + ry + (on(13) ? .6 : 0) - (on(12) ? .6 : 0), b = $('game').getBoundingClientRect();
+    pad.x = clamp(pad.x + dx * dt * .62 * b.height / b.width, 0, 1); pad.y = clamp(pad.y + dy * dt * .62, 0, 1);
+    const a = on(0); if (!pad.pointing) pad.a = a;   // A still held from the room does not press the moment a menu or puzzle opens
+    pointerInput({ n: 0, hands: [], pointer: { x: pad.x, y: pad.y }, grab: a, down: a && !pad.a, up: !a && pad.a, bang: false, two: null, look: { x: 0, y: 0 } }); pad.a = a;
+  } else {
+    if (pad.pointing) { pointerInput(null); pad.a = false; }
+    if (inspect) { inspect.angle -= rx * dt * 2.4; inspect.tilt = clamp(inspect.tilt + ry * dt * 1.5, -.85, .85); if (rx || ry) needsDraw = true; }
+    else { pad.yaw = -rx * (comfort ? 1.6 : 2.4); pad.pitch = -ry * 1.6; }
+    pad.f = -ly; pad.r = lx; pad.run = on(6) || on(10);
+  }
+  pad.pointing = pointing;
+}
+addEventListener('gamepadconnected', () => notify('Controller connected', 'Left stick walks, right stick looks, A interacts. See Controls for the rest.', 5));
+// ── Hand setup (four steps) and hand tutorial (five steps). ──
+const canGuide = () => !started || modal === 'pause' || modeActive();
+function guideCard(step, title, text, progress, skip) {
+  $('spatialCard').hidden = false; setText('spatialStep', step); setText('spatialTitle', title); setText('spatialText', text);
+  $('spatialBar').style.width = Math.round(clamp(progress, 0, 1) * 100) + '%'; if ($('spatialSkip').firstChild.textContent !== skip + ' ') $('spatialSkip').firstChild.textContent = skip + ' ';
+}
+// A step registered: the skeleton view flashes green and the latch sounds.
+function passed() { const v = $('spatialView'); v.classList.remove('ok'); void v.offsetWidth; v.classList.add('ok'); audio.cue('latch'); }
+function startCalibration() {
+  if (inputMode !== 'spatial') return;
+  if (!canGuide()) { spatialNote('Hand tracking is on. Open Pause to set up your hands.'); return; }
+  endGuide(); if (modal) closeModal(); dropKeys(); release(); handRelease();
+  setGuide({ cal: new Calibration(), step: 1 }); $('spatialView').classList.add('big');
+}
+function calibrate(f, t) {
+  const v = guide.cal.feed(f, t);
+  guideCard(`Hand setup · ${v.step} of ${v.of}`, v.title, v.text, v.progress, 'Skip setup');
+  if (v.done) { spatial.setProfile(v.profile); passed(); finishCalibration(); }
+  else if (v.step !== guide.step) { guide.step = v.step; passed(); }
+}
+function finishCalibration() {
+  setGuide(null); $('spatialView').classList.remove('big'); $('spatialCard').hidden = true; needsDraw = true;
+  if (getStored(TUTORIAL_KEY) !== 'done') startTutorial();
+  else { spatialNote('Hands calibrated and saved on this device.'); if (started && !modal) pause(); }
+}
+function skipGuide() {
+  if (guide?.cal) { spatial.setProfile({ ...spatial.profile, calibrated: true }); finishCalibration(); }   // standard settings, and no asking again
+  else endTutorial(false);
+}
+const TUT = [
+  ['Look around', 'Move your hand toward an edge of the screen to turn your head, and bring it back to the middle to stop. Find the amber light and look at it. Walking stays on the keyboard.'],
+  ['Grab and drag', 'Put your hand over the brass handle and close it, as if taking hold. Keep it closed and pull the drawer toward you. Opening your hand lets go.'],
+  ['Precision turn', 'Take hold of the first brass wheel and move your hand slowly upward until it shows 3.'],
+  ['Two-hand inspect', 'Close both hands, then turn them like a steering wheel to rotate the page.'],
+  ['Fist push', 'Make a fist and push it at the camera to strike the glass.'],
+];
+const TUT_RIGS = [null, ['drawer', { label: 'Practice drawer', contents: { title: 'Well done', lines: ['Opening your hand lets go.'] } }], ['tumbler', { code: '300', label: 'Set the first wheel to 3' }], ['read', { name: 'Practice sheet', title: 'Turn this page', body: 'Close both hands and turn them like a steering wheel.' }], ['smash', {}]];
+// The tutorial borrows the office as a practice room: the game's own state, save and clock are not touched.
+function startTutorial() {
+  if (inputMode !== 'spatial' || !renderer) return;
+  if (!canGuide() || inspect) { spatialNote('Finish what you are doing, then open Pause for the hand tutorial.'); return; }
+  endGuide(); if (modal) closeModal(); dropKeys(); release(); handRelease();
+  setGuide({ tut: true, i: 0, hold: 0, twist: 0, wait: 0, marks: [], saved: { pos: camera.position.clone(), yaw, pitch, crouched, title: $('title').hidden, hud: $('hud').hidden } });
+  crouched = false; $('title').hidden = true; $('hud').hidden = true;
+  tutStep(0);
+}
+function tutMark(x, y, z) {
+  const m = new THREE.Mesh(new THREE.SphereGeometry(.07, 16, 12), new THREE.MeshBasicMaterial({ color: '#ffb347', transparent: true, opacity: .9, depthTest: false }));
+  m.position.set(x, y, z); m.renderOrder = 998; scene.add(m); guide.marks.push(m); return m;
+}
+function tutClear() { for (const m of guide.marks) { scene.remove(m); m.geometry.dispose(); m.material.dispose(); } guide.marks = []; }
+function tutStep(i) {
+  const g = guide; Object.assign(g, { i, hold: 0, twist: 0, wait: 0 }); hands.close(); tutClear();
+  pose(1.30, 3.70, locations.desk);
+  if (!i) { g.target = new THREE.Vector3(camera.position.x - Math.sin(yaw + 1.3) * 2.2, 2.05, camera.position.z - Math.cos(yaw + 1.3) * 2.2); tutMark(g.target.x, g.target.y, g.target.z).scale.setScalar(1.6); return; }   // a light off to one side to look at
+  // Steps 2 to 5 use the game's own 3D puzzle parts, hung in the air in front of the player.
+  const [kind, opts] = TUT_RIGS[i], at = camera.position.clone().add(camera.getWorldDirection(new THREE.Vector3()).setY(0).normalize()); at.y = 1.2;
+  const p = hands.pose(kind, at, camera.position);
+  pose(p.cam.x, p.cam.z, p.look, p.cam.y);
+  hands.open(kind, opts, p, { done: () => { if (guide === g && g.i === i && i < 3) tutPass(); } });
+}
+function tutPass() { const g = guide; if (!g?.tut || g.wait) return; passed(); g.wait = 1.1; }
+function tutorialFrame(dt) {
+  const g = guide; time += dt;
+  if (hands.active) hands.update(dt); else move(Math.min(dt, .09));
+  let progress = g.wait ? 1 : 0;
+  if (g.i === 0 && !g.wait) {
+    const aim = camera.getWorldDirection(handRay).dot(tutDir.copy(g.target).sub(camera.position).normalize()); g.hold = aim > .97 ? g.hold + dt : 0; progress = (aim - .5) / .47; if (g.hold > .35) tutPass();
+  } else if (g.i === 3 && !g.wait) progress = g.twist / .6;
+  for (const m of g.marks) m.material.opacity = .65 + .3 * Math.sin(time * 5);
+  if (g.wait && (g.wait -= dt) <= 0) { if (g.i < 4) tutStep(g.i + 1); else { endTutorial(true); return; } }
+  guideCard(`Hand tutorial · ${g.i + 1} of 5`, TUT[g.i][0], TUT[g.i][1], progress, 'Skip tutorial');
+  renderer.setFx(0, 0, 0); renderer.setDetective(0); renderer.render(time, 0, 1, .7, 0, 0, 0);
+}
+function endTutorial(done) {
+  const g = guide; if (!g?.tut) return;
+  hands.close(); tutClear(); setGuide(null); $('spatialCard').hidden = true; putStored(TUTORIAL_KEY, 'done'); handRelease(); stillNav();
+  camera.position.copy(g.saved.pos); yaw = g.saved.yaw; pitch = g.saved.pitch; crouched = g.saved.crouched; camera.rotation.set(pitch, yaw, 0, 'YXZ'); camera.updateMatrixWorld();
+  $('title').hidden = g.saved.title; $('hud').hidden = g.saved.hud; needsDraw = true;
+  spatialNote(done ? 'Tutorial complete. Your hands grab and look; the keyboard walks.' : 'Tutorial skipped. You can replay it from the Pause menu.');
+  if (started && !modal) pause();
+}
+function endGuide() { if (guide?.tut) endTutorial(false); else if (guide) { setGuide(null); $('spatialView').classList.remove('big'); $('spatialCard').hidden = true; } }
 const DETECTIVE_STAGES = ['detective', 'lock', 'recoverKey', 'closet', 'verify', 'board', 'gate', 'glass', 'radio'];
 let detectiveBlend = 0, leaveT = -1, state = fresh(),
   stored = readRun(getStored(storageKey)),
@@ -138,7 +348,7 @@ let yaw = 0,
   pitch = 0,
   crouched = false,
   moving = false,
-  walkTime = 0,
+  walkTime = 0, bobAmount = 0,
   footTime = 0,
   lookDrag = null,
   heldUse = false,
@@ -163,7 +373,8 @@ let lockDigits = [0, 0, 0],
   modalMessage = '',
   saveTimer = 0,
   pausedOrigin = '';
-let cine=null, shakeTime=0, arrowShown=false, doorGrace=0, aiming=null, jamTime=0, heartbeatAt=0;
+let cine=null, shakeTime=0, arrowShown=false, doorGrace=0, aiming=null, jamTime=0, jamCool=0, heartbeatAt=0, tenseT=0, pulse=0;
+const JAM_COOLDOWN=45; // seconds before the watch overdrive can jam the guards again
 // Veteran Investigator Mode: larger text, a loupe, click alternatives to drags, a guard grace window. Off by default.
 let comfort=false;
 function setComfort(on){comfort=!!on;putStored('redacted-donor.comfort',comfort?'on':'off');document.getElementById('game').dataset.comfort=comfort?'on':'off';setEase(comfort?3:1);
@@ -175,7 +386,7 @@ const htmlButton = (action, title, cls = 'plain-btn', attrs = '') =>
 const message = () => `<p class="message" role="status">${modalMessage}</p>`;
 const caseNo = () => String(state.caseIndex + 1).padStart(2, '0');
 const character = () => ['contract', 'street', 'memory'].includes(state.stage) ? 'Mateo' : 'Detective';
-const modeActive = () => started && !modal && !document.hidden && !cine;
+const modeActive = () => started && !modal && !document.hidden && !cine && !guide;
 function persist(now = false) {
   if (!started) return;
   const base = cine?.start || parked?.start || camera.position, by = cine ? cine.yaw : parked ? parked.yaw : yaw, bp = cine ? cine.pitch : parked ? parked.pitch : pitch;
@@ -220,7 +431,25 @@ function pose(x, z, point, height = 1.65) {
   camera.rotation.z = 0;
   camera.updateMatrixWorld();
 }
+// Voice lines. Whatever text the game shows (a caption, a cutscene line, a remark in a puzzle) is matched against the
+// recorded lines by a distinctive phrase, so the voice always says what the subtitle shows. Ids are in VOICELINES.md.
+const VOICE = [['only way out is the window', 'mateo-05'], ['six inches of tinted glass', 'mateo-06'], ['let them find the time', 'mateo-07'], ['people stop and look in', 'mateo-08'],
+  ['now hide it', 'mateo-09'], ['proof they took', 'mateo-10'], ['street only sees its reflection', 'mateo-11'], ['out of reach of a broom', 'mateo-12'], ['a number worth keeping', 'mateo-13'],
+  ['wedged in the printer frame', 'mateo-14'], ['i do not consent', 'mateo-15'], ['the hours slip by', 'mateo-16'], ['not the first', 'mateo-18'],
+  ['read what mateo left behind', 'det-01'], ['a nib scratch', 'det-02'], ['a sedative stain', 'det-03'], ['a ribbon impression', 'det-04'], ['fits the copying board', 'det-05'], ['same agency stamp', 'det-06'],
+  ['same account buys kidneys', 'det-07'], ['pressed into the pad', 'det-08'], ['same file number as the receipt', 'det-09'], ['ties the job offer to the passport', 'det-10'], ['still looped round', 'det-11'],
+  ['out at 00 40', 'det-12'], ['pier 9 cold storage', 'det-13'], ['closet key under the radiator', 'det-14'], ['right where mateo hid it', 'det-15'], ['a courier manifest', 'det-16'],
+  ['matches the pier 9 gate ticket', 'det-17'], ['640 khz harbour service', 'det-18'], ['st jude maritime suite b', 'det-19'], ['wired to the recruitment terminal', 'det-20'], ['the records are safe', 'det-21'],
+  ['still marked for surgery', 'det-22'], ['the dispatch key now the ham radio', 'det-23'], ['advocate confirms suite b', 'det-24'], ['reopened at the desk', 'det-25'], ['there it is', 'det-26'],
+  ['take the key', 'det-27'], ["it's open", 'det-28'], ["we're moving", 'dispatch-01'], ["suite b four o'clock", 'advocate-01'], ['we have him', 'dispatch-02']];
+let spoke = '', spokeAt = -9;
+function speak(text) {
+  const t = String(text).toLowerCase().replace(/[’‘]/g, "'").replace(/[^a-z0-9' ]+/g, ' ').replace(/\s+/g, ' '), hit = VOICE.find(([k]) => t.includes(k));
+  if (!hit || (hit[1] === spoke && time - spokeAt < 8)) return;   // the same line shown twice in a row (a remark, then its cutscene) is said once
+  spoke = hit[1]; spokeAt = time; audio.say(hit[1]);
+}
 function notify(speaker, text, duration = 5.2) {
+  speak(text);
   if (comfort) duration *= 1.7;
   $('caption').firstElementChild.textContent = speaker;
   $('caption').lastElementChild.textContent = text;
@@ -242,7 +471,10 @@ function flash(kind) {
   $('flash').className = kind;
   hitTime = kind === 'hit' ? .32 : .14;
 }
+let shownScore = null;
 function scoreHUD() {
+  if (shownScore !== null && state.score > shownScore) audio.sfx('points');
+  shownScore = state.score;
   const val = (state.score < 0 ? '−' : '') + Math.abs(state.score).toLocaleString('en-US');
   if ($('counter').dataset.value !== val) {
     $('counter').dataset.value = val;
@@ -339,24 +571,31 @@ function panel(name, kicker, title, body, { wide = false, close = true, talk = f
     $('panel').querySelector('button:not(.panel-close):not(:disabled)')?.focus({ preventScroll: true });
   }
 }
+// One table, one row per action, so the keyboard and the controller line up side by side.
 function controls() {
+  const rows = [
+    ['Walk', 'W A S D', 'Left stick'],
+    ['Look', 'Mouse / arrow keys', 'Right stick'],
+    ['Crouch / stand', 'C', 'B'],
+    ['Interact / hold', 'E', 'A'],
+    ['Run', 'Shift', 'LT / click left stick'],
+    ['Throw (hold to aim)', 'G', 'RT / RB'],
+    ['Lab coat kit', 'B / Tab', 'Y'],
+    ['Field journal', 'J', 'X'],
+    ['Watch overdrive', 'O', 'Back / View'],
+    ['Pause', 'Esc', 'Start / Menu'],
+    ['Hand tracking on / off', 'H, anywhere', 'Pause menu'],
+    ['Turn over document', 'F', 'LB'],
+    ['Menus and puzzles: pointer', 'Mouse', 'Sticks / D-pad'],
+    ['Menus and puzzles: press and drag', 'Click', 'A'],
+    ['Menus and puzzles: back', 'Esc', 'B'],
+  ];
   panel(
     'controls',
     '',
     'Controls',
-    `<div class="control-grid">${
-      [
-        ['Walk', 'W A S D'],
-        ['Look', 'Mouse / drag'],
-        ['Keyboard look', 'Arrow keys'],
-        ['Interact / hold', 'E'],
-        ['Crouch / stand', 'C'],
-        ['Run', 'Shift'],
-        ['Lab coat kit', 'B / Tab'],
-        ['Field journal', 'J'],
-        ['Pause', 'Esc'],
-        ['Turn over document', 'F'],
-      ].map(([n, k]) => `<div>${n}<kbd>${k}</kbd></div>`).join('')
+    `<div class="control-table"><div class="control-head"><span>Action</span><span>Keyboard and mouse</span><span>Controller</span></div>${
+      rows.map(([n, k, c]) => `<div><span>${n}</span><span><kbd>${k}</kbd></span><span><kbd>${c}</kbd></span></div>`).join('')
     }</div><div class="panel-actions">${
       htmlButton('back', 'Back', 'gold-btn')
     }</div>`,
@@ -364,8 +603,8 @@ function controls() {
 }
 const unsearched=()=>Object.entries(curios).filter(([id])=>!state.awards.includes('curio:'+id)).map(([,c])=>[c.at[0],c.at[2]]);
 function mapDrawing(){return floorplan(camera.position.x,camera.position.z,yaw,comfort?mainTarget():null,state.hasWatch?unsearched():[],{lab:doorOpen('lab'),dispatch:doorOpen('dispatch')});}
-function pause(){if(!started||modal||cine||['end','gameOver'].includes(state.stage))return;persist();
-  const id=mainTarget();panel('pause','','Paused',`<div class="folio-grid"><div><div class="folio-file">Case ${state.caseIndex+1}: ${cases[state.caseIndex].name}</div><h3>${character()}’s next move</h3><p class="big-note">${inspect?'Rotate the exhibit into the lamplight.':mission()}</p><p class="location-note">${comfort?placeName(id):''}</p><div class="pause-tools">${htmlButton('back','Resume game','gold-btn')}${htmlButton('pause-journal','Open field journal','plain-btn')}${htmlButton('controls','Controls','plain-btn')}${htmlButton('sound',audio.muted?'Sound off':'Sound on','plain-btn')}${htmlButton('comfort',comfort?'Veteran Investigator Mode: on':'Veteran Investigator Mode: off','plain-btn')}${htmlButton('auto-codes',autoCodes?'Auto-save codes to journal: on':'Auto-save codes to journal: off','plain-btn')}${htmlButton('cloud-sync',cloud.syncOn()?'Cloud save: on':'Cloud save: off','plain-btn')}${cloud.syncOn()&&cloud.code()?`<p class="transfer-code"><small>Transfer code</small><b>${esc(cloud.code())}</b></p>`:''}${htmlButton('title','Save and quit to title','text-btn')}</div></div>${mapDrawing()}</div>`,{wide:true,close:false});}
+function pause(){if(!started||modal||cine||guide||['end','gameOver'].includes(state.stage))return;persist();
+  const id=mainTarget();panel('pause','','Paused',`<div class="folio-grid"><div><div class="folio-file">Case ${state.caseIndex+1}: ${cases[state.caseIndex].name}</div><h3>${character()}’s next move</h3><p class="big-note">${inspect?'Rotate the exhibit into the lamplight.':mission()}</p><p class="location-note">${comfort?placeName(id):''}</p><div class="pause-tools">${htmlButton('back','Resume game','gold-btn')}${htmlButton('pause-journal','Open field journal','plain-btn')}${htmlButton('controls','Controls','plain-btn')}${htmlButton('sound',audio.muted?'Sound off':'Sound on','plain-btn')}${htmlButton('comfort',comfort?'Veteran Investigator Mode: on':'Veteran Investigator Mode: off','plain-btn')}${htmlButton('hand-toggle',inputMode==='spatial'?'Hand tracking: on':'Hand tracking: off','plain-btn')}${inputMode==='spatial'?htmlButton('hand-speed','Hand look speed: '+HAND_SPEEDS[handSpeed][0].toLowerCase(),'plain-btn')+htmlButton('hand-camera','Camera: '+esc(spatial.camera?.label||'default'),'plain-btn')+htmlButton('hand-engine','Hand engine: '+(spatial.engine==='main'?'classic':'smooth'),'plain-btn')+htmlButton('hand-setup','Recalibrate hands','plain-btn')+(inspect?'':htmlButton('hand-tutorial','Hand tutorial','plain-btn')):''}${htmlButton('auto-codes',autoCodes?'Auto-save codes to journal: on':'Auto-save codes to journal: off','plain-btn')}${htmlButton('cloud-sync',cloud.syncOn()?'Cloud save: on':'Cloud save: off','plain-btn')}${cloud.syncOn()&&cloud.code()?`<p class="transfer-code"><small>Transfer code</small><b>${esc(cloud.code())}</b></p>`:''}${htmlButton('title','Save and quit to title','text-btn')}</div></div>${mapDrawing()}</div>`,{wide:true,close:false});}
 // pause() refuses to open over another menu, so a switch inside Pause clears the flag to redraw it.
 function repause(action){modal='';pause();$('panelBody').querySelector(`[data-action="${action}"]`)?.focus({preventScroll:true});}
 function journal(){if(!started||inspect)return;const file=cases[state.caseIndex],active=stageTargets(state),id=mainTarget();
@@ -374,7 +613,7 @@ function journal(){if(!started||inspect)return;const file=cases[state.caseIndex]
   const unlocked=[...new Set(state.links.flatMap(i=>cases[i].actions))];
   panel('journal','','Field journal',`<div class="folio-grid"><div><div class="folio-file">${state.hasWatch?`Case ${state.caseIndex+1}: ${file.name}`:'The blind street'}</div><h3>${state.hasWatch?file.question:'Can anyone outside hear Mateo?'}</h3><div class="next-note"><small>${comfort?'Next':'The question'}</small><b>${mission()}</b><span>${comfort?placeName(id):'Your leads are listed below. Find them yourself.'}</span></div>${(state.codes||[]).length?`<details class="journal-details codes" open><summary>Codes and numbers (${state.codes.length})</summary><div class="log-list">${state.codes.map(k=>`<div class="log-row code-row"><b>${CODES[k][1]}</b><small>${CODES[k][0]}</small></div>`).join('')}</div></details>`:''}${state.hasWatch?`<details class="journal-details" ${state.stage==='memory'?'open':''}><summary>Mateo’s leads (${state.found.length} of ${file.tasks.length})</summary><ol class="journal-steps">${list}</ol></details>`:''}${searchedList()}${records?`<details class="journal-details"><summary>Evidence (${state.exhibits.length} of ${evidence.length})</summary><div class="log-list">${records}</div></details>`:''}</div>${mapDrawing()}</div>${unlocked.length?`<div class="tabs">${unlocked.map(i=>htmlButton('action-card',actions[i].title,'tab',`data-id="${i}"`)).join('')}</div>`:''}<div class="panel-actions">${htmlButton('back',journalOrigin==='pause'?'Back to pause':'Back to the room','gold-btn')}</div>`,{wide:true});}
 function searchedList(){const ids=Object.keys(curios),seen=ids.filter(id=>state.awards.includes('curio:'+id));
-  return `<details class="journal-details"><summary>Searched (${seen.length} of ${ids.length})</summary><div class="log-list">${ids.map(id=>seen.includes(id)?`<div class="log-row"><b>${curios[id].title}</b><small>${curios[id].name}</small></div>`:`<div class="log-row unsearched"><b>${curios[id].name}</b><small>Not searched yet. Marked with a dot on the map.</small></div>`).join('')}</div></details>`;}
+  return `<details class="journal-details"><summary>Searched (${seen.length} of ${ids.length})</summary><div class="log-list">${ids.map(id=>seen.includes(id)?`<div class="log-row"><b>${curios[id].title}</b><small>${curios[id].journal||curios[id].name}</small></div>`:`<div class="log-row unsearched"><b>${curios[id].name}</b><small>Not searched yet. Marked with a dot on the map.</small></div>`).join('')}</div></details>`;}
 function kit() {
   if (!started || !state.hasWatch || inspect) return;
   panel(
@@ -402,6 +641,7 @@ function contract() {
   let body = '';
   if (state.beat === 0) {
     body =
+      '<p class="setup">A month ago Mateo answered an ad from Aegis Global Pathways: a lab-technician job overseas, three times his pay at home, flights and housing covered. Aegis kept his passport “for safekeeping” and sent him for a “routine medical”: a blood test and tissue typing. Tonight they called him in to sign the final papers.</p>' +
       '<p>“Your overseas lab placement was canceled, Mateo. Which leaves the $14,500 processing and medical screening bond you owe Aegis.”</p><div class="choices">' +
       choice('demand', 'Demand your passport', 1) + choice('work', 'Offer to work it off', 2) + '</div>';
   } else if (state.beat === 1) {
@@ -420,6 +660,10 @@ function contract() {
       htmlButton('stand', 'Get to your feet', 'gold-btn')
     }</div>`;}
   panel('contract', 'Intake office', 'The rigged contract', body, { talk: true, close: false });
+  // Spoken in order: Mateo's answer to the last choice, then the recruiter and the narrator.
+  if (state.beat === 0) audio.say('recruiter-01');
+  else if (state.beat === 1) state.confiscated ? audio.say('mateo-01', 'recruiter-02', 'narr-01') : audio.say('mateo-02', 'narr-02', 'recruiter-03');
+  else state.coercion === 'refused' ? audio.say('mateo-03', 'narr-03', 'narr-05') : audio.say('mateo-04', 'narr-04', 'narr-05');
 }
 function spawnForStage() {
   crouched = false;
@@ -466,6 +710,8 @@ function enterGame(resume) {
   audio.warmRecorded();
   cine = null; parked = null; $('fade').classList.remove('dark');
   state = resume && stored ? readRun(JSON.stringify(stored)) : fresh();
+  calmGuards();
+  shownScore = null; // a loaded score is not a gain
   started = true;
   closeModal();
   $('title').hidden = true;
@@ -500,6 +746,7 @@ function enterGame(resume) {
   persist();
 }
 function title() {
+  audio.jazz(false);audio.tension(false);
   if(inspect)leaveInspection();
   if(cine)endCine();
   persist(true);
@@ -529,13 +776,13 @@ function beginMemory(){const eye=camera.position.clone();leaveInspection(false);
 function briefing(){const file=cases[state.caseIndex],glyph={day:'Day',night:'Night',any:'Any time'};
   const steps=file.tasks.map((k,i)=>`<li><span>${String(i+1).padStart(2,'0')}</span><b>${leads[k].action}</b><em class="shift-${leads[k].shift}">${glyph[leads[k].shift]}</em></li>`).join('');
   panel('briefing',`Case ${state.caseIndex+1}`,file.name,`<p class="brief-question">${file.question}</p>${state.caseIndex?'':`<div class="brief-keys"><span><i>◆</i>${comfort?'Follow the diamond':'Leads are in your journal (J)'}</span><span><i>☾</i>Some leads need night</span><span><i>C</i>Hide from the guard</span><span><i>J</i>Map</span></div>`}<div class="brief-rules" hidden><div><i>◆</i><b>Follow the gold diamond</b><small>It marks the next lead. When it’s off screen, an arrow on the edge points the way.</small></div><div><i>☾</i><b>Day and night show different things</b><small>The clock turns every ${SHIFT_LENGTH}s. If the next lead needs the other shift, wait on the staff bench.</small></div><div><i>C</i><b>Hide from the guard</b><small>Footsteps and the eye banner mean he is coming. Crouch with C, or get behind furniture, before the red stare fills.</small></div><div><i>J</i><b>Open the journal (J)</b><small>It has a map, your next step and every lead in this case.</small></div></div><h3 class="brief-head">Leads</h3><ol class="brief-steps">${steps}</ol><div class="panel-actions">${htmlButton('back','Begin the reconstruction','gold-btn')}</div>`,{wide:true,close:false});}
-const losses={guard:{reason:'The corridor guard saw Mateo.',tip:'When you hear footsteps, crouch or get behind something.'},lock:{reason:'The drawer jammed on the wrong number.',tip:'The number is in your journal.'},board:{reason:'The evidence trail broke at the corkboard.',tip:'Pick this case on the left, then its lead on the right.'}};
+const losses={guard:{reason:'A guard saw you.',tip:'When you hear footsteps, crouch or get behind something.'},lock:{reason:'The drawer jammed on the wrong number.',tip:'The number is in your journal.'},board:{reason:'The evidence trail broke at the corkboard.',tip:'Pick this case on the left, then its lead on the right.'}};
 // Online records: a run report on every win or loss; the leaderboard needs a name once.
 const runRow=(outcome)=>({p_outcome:outcome,p_case:Math.min(3,state.caseIndex),p_cause:outcome==='caught'?String(state.loss?.cause||''):'',p_score:state.score,p_caught:state.stats?.caught||0,p_spent:state.stats?.spent||0,p_items:state.stats?.items||[],p_seconds:Math.round(state.stats?.seconds||0),p_veteran:comfort});
 const esc=(t)=>String(t).replace(/[&<>"']/g,(c)=>`&#${c.charCodeAt(0)};`);
 const rankOf=(score)=>score>=2400?'Chief investigator':score>=1550?'Senior investigator':'Field investigator';
 function recordBox(){
-  if(state.filed)return `<div class="record-box filed"><small>On the record</small><b>${esc(cloud.name())}</b><span id="recordStatus">${cloud.pending()?'Waiting for a connection to file it.':cloud.lastPlace?`Filed. You are number ${cloud.lastPlace} on the ${comfort?'veteran':'standard'} board.`:'Filed. See Records on the title screen.'}</span></div>`;
+  if(state.filed)return `<div class="record-box filed"><small>On the record</small><b>${esc(cloud.name())}</b><span id="recordStatus">${cloud.pending()?'Waiting for a connection to file it.':cloud.lastPlace?`Filed. You are number ${Number(cloud.lastPlace)} on the ${comfort?'veteran':'standard'} board.`:'Filed. See Records on the title screen.'}</span></div>`;
   return `<div class="record-box"><small>File your result on the public record</small><label class="record-field"><span>Investigator name</span><input id="recordName" maxlength="16" autocomplete="nickname" spellcheck="false" value="${esc(cloud.name())}" placeholder="2–16 letters or numbers"></label>${htmlButton('file-score','Submit to the record','gold-btn')}<span id="recordStatus" role="status"></span></div>`;}
 async function fileScore(){
   const input=document.getElementById('recordName'),status=document.getElementById('recordStatus'),name=(input?.value||'').trim();
@@ -595,27 +842,32 @@ async function records(){
   panel('records','','Records',`<div class="tabs board-tabs">${htmlButton('board-tab','Standard',boardVeteran?'tab':'tab active','data-v="0"')}${htmlButton('board-tab','Veteran mode',boardVeteran?'tab active':'tab','data-v="1"')}</div><ol class="board-list" id="boardList"><li class="board-empty">Opening the records…</li></ol><details class="journal-details transfer"><summary>Continue a save from another device</summary><label class="record-field"><span>Transfer code</span><input id="transferCode" maxlength="12" spellcheck="false" autocomplete="off" placeholder="12 characters"></label>${htmlButton('load-code','Load that save','plain-btn')}<span id="transferStatus" role="status"></span></details><div class="panel-actions">${htmlButton('back','Back to title','gold-btn')}</div>`,{wide:true});
   const list=document.getElementById('boardList');
   try{const rows=await cloud.leaderboard(boardVeteran);if(!document.getElementById('boardList'))return;
-    list.innerHTML=rows.length?rows.map((r,i)=>`<li class="${r.name===cloud.name()?'me':''}"><i>${i+1}</i><b>${esc(r.name)}</b><small>${esc(r.rank||'')} · ${r.cases_closed} of 3 · ${Math.floor(r.seconds/60)}m ${String(r.seconds%60).padStart(2,'0')}s</small><strong>${Number(r.score).toLocaleString('en-US')}</strong></li>`).join(''):'<li class="board-empty">No one is on this board yet. Close all three cases to be first.</li>';}
+    list.innerHTML=rows.length?rows.map((r,i)=>`<li class="${r.name===cloud.name()?'me':''}"><i>${i+1}</i><b>${esc(r.name)}</b><small>${rankOf(Number(r.score))} · ${Number(r.cases_closed)} of 3 · ${Math.floor(Number(r.seconds)/60)}m ${String(Number(r.seconds)%60).padStart(2,'0')}s</small><strong>${Number(r.score).toLocaleString('en-US')}</strong></li>`).join(''):'<li class="board-empty">No one is on this board yet. Close all three cases to be first.</li>';}
   catch{list.innerHTML='<li class="board-empty">The records office is out of reach. Check your connection.</li>';}}
 async function loadCode(){
   const code=(document.getElementById('transferCode')?.value||'').trim(),status=document.getElementById('transferStatus');
   if(!/^[0-9a-fA-F]{12}$/.test(code)){status.textContent='Codes are 12 characters, 0–9 and A–F.';return;}
+  // Loading a code replaces the save on this device: ask once before throwing a game away.
+  if(stored&&loadCode.asked!==code){loadCode.asked=code;status.textContent='This replaces the game saved on this device. Press Load again to go ahead.';return;}
   status.textContent='Looking it up…';
   try{const data=await cloud.loadCode(code);const run=readRun(JSON.stringify(data));if(!run)throw new Error('That save could not be read.');
-    putStored(storageKey,JSON.stringify(data));stored=run;status.textContent='Loaded. Continue the investigation from the title screen.';title();}
+    data.savedAt=Date.now();   // the code's own timestamp is not trusted: a future one would block this device's cloud save
+    putStored(storageKey,JSON.stringify(data));stored=run;loadCode.asked='';status.textContent='Loaded. Continue the investigation from the title screen.';title();}
   catch(e){status.textContent=/No save|could not/.test(e.message)?e.message:'Online records are unavailable right now.';}}
-function gameOver(){cloud.logRun(runRow('caught'));const loss=state.loss||{cause:'guard',steps:0};const report=losses[loss.cause]||losses.guard;panel('gameOver',`Case ${state.caseIndex+1}`,'The trail went cold.',`<div class="outcome-grid"><div class="loss-art" role="img" aria-label="A pocket watch lies on the clinic floor beneath the corridor light"></div><div class="outcome-copy"><h3>${report.reason}</h3><p>${report.tip}</p><div class="loss-ledger"><span>Retrying costs <b>50 points</b></span><span>Cases already closed <b>${state.checkpoint.links.length}</b></span></div><div class="panel-actions">${htmlButton('revive','Retry this case','gold-btn')}${htmlButton('title','Return to title','text-btn')}</div></div></div>`,{wide:true,close:false});}
+function gameOver(){const loss=state.loss||{cause:'guard',steps:0};const report=losses[loss.cause]||losses.guard;panel('gameOver',`Case ${state.caseIndex+1}`,'The trail went cold.',`<div class="outcome-grid"><div class="loss-art" role="img" aria-label="A pocket watch lies on the clinic floor beneath the corridor light"></div><div class="outcome-copy"><h3>${report.reason}</h3><p>${report.tip}</p><div class="loss-ledger"><span>Retrying costs <b>50 points</b></span><span>Cases already closed <b>${state.checkpoint.links.length}</b></span></div><div class="panel-actions">${htmlButton('revive','Retry this case','gold-btn')}${htmlButton('title','Return to title','text-btn')}</div></div></div>`,{wide:true,close:false});}
 function damage(cause){if(state.stage==='gameOver'||invulnerable>0&&state.stage==='memory')return;
-  state.hp=Math.max(0,state.hp-34);invulnerable=3.5;guardMeter=0;flash('hit');shakeTime=.5;playFx(FX.hit);audio.cue('hurt');scoreHUD();const report=losses[cause];modalMessage=report.reason+' One composure bulb lost.';notify(character(),modalMessage,3.4);
+  state.hp=Math.max(0,state.hp-34);invulnerable=3.5;guardMeter=0;flash('hit');shakeTime=.5;playFx(FX.hit);audio.cue('hurt');scoreHUD();const report=losses[cause];modalMessage=report.reason+' One composure bulb lost.';notify('Spotted',modalMessage,3.4);
   if(modal==='hands')closeModal(); // you drop what you were doing
   if(state.hp===0&&cause==='guard'&&state.stage==='memory'){caughtByGuard();return;}
-  if(state.hp===0){loseCase(state,cause);clearAlert();closeModal();updateHud();persist();gameOver();return;}persist();}
+  if(state.hp===0){loseCase(state,cause);cloud.logRun(runRow('caught'));clearAlert();closeModal();updateHud();persist();gameOver();return;}persist();}
 // Mateo's last bulb: no restart. The guard takes back the last thing he hid, hours are lost, and the guards stay on alert for the rest of the case.
+// A new game, a retry or a capture: guards back on their routes, throwables back in place, nothing in hand.
+function calmGuards(){stealth.reset();aiming=null;showHeld(null);}
 function caughtByGuard(){
   const lost=state.found.pop();
   state.hp=34;state.alarm=(state.alarm||0)+1;state.benchWatched=true;state.score-=50;(state.stats||={seconds:0,caught:0,spent:0,items:[]}).caught++;
   waitForShift(state);state.guardTime=0;patrol=patrolAt(0,state.caseIndex);guardBeat=-1;clearAlert();closeModal();tracked='';
-  cutscene({at:guardWindow,kicker:'Caught',title:'He drags you back to the bench',line:(lost?`You lose your last lead: ${discoveries[lost][0]}. `:'')+'Hours pass. The guards are on alert, and the staff bench is watched.',fx:'neg',shake:true,hold:3,mode:'cut',cue:'hurt',then(){spawnForStage();scoreHUD();updateHud();persist();}});}
+  cutscene({at:guardWindow,kicker:'Caught',title:'He drags you back to the bench',line:(lost?`You lose your last lead: ${discoveries[lost][0]}. `:'')+'Hours pass. The guards are on alert, and the staff bench is watched.',fx:'neg',shake:true,hold:3,mode:'cut',cue:'hurt',then(){calmGuards();spawnForStage();scoreHUD();updateHud();persist();}});}
 function inputLock() {
   panel(
     'lock',
@@ -746,7 +998,7 @@ function advanceFile(){
   if(state.caseIndex===0&&!state.gates[0]){state.stage='gate';state.gateStep='terminal';spawnForStage();chapter('Detective / The intake lobby','The lure ads');notify('Detective','The lab door is wired to the recruitment terminal.',4);updateHud();persist();return;}
   if(state.caseIndex===1&&!state.gates[1]){state.stage='gate';state.gateStep='shredder';spawnForStage();chapter('Detective / The phlebotomy lab','The ethics hold');notify('Detective','Mateo’s file is still marked for surgery.',4);updateHud();persist();return;}
   if (state.caseIndex === 2) {
-    state.stage = 'glass';spawnForStage();
+    state.stage = 'glass';delete state.rescueLeft;spawnForStage();
   } else {
     startCase(state, state.caseIndex + 1);
     props.setCase(state.caseIndex);
@@ -876,7 +1128,7 @@ function leaveInspection(restore = true) {
 function interact(id = focus) {
   if(!id&&comfort&&modeActive()&&!inspect){const m=mainTarget();if(m&&inReach(m))id=m;}
   if(id&&id.startsWith('curio:')){if(modeActive()&&!inspect)searchCurio(id.slice(6));return;}
-  if(id&&id.startsWith('throw:')){if(modeActive()&&!inspect){const kind=stealth.pickUp(id.slice(6));if(kind){audio.sfx('clink');showHeld(kind);}}return;}
+  if(id&&id.startsWith('throw:')){if(modeActive()&&!inspect){const kind=stealth.pickUp(id.slice(6));if(kind){audio.sfx('select');showHeld(kind);}}return;}
   if (!modeActive() || inspect || !id || !stageTargets(state).includes(id)) return;
   if(id==='rest'&&state.benchWatched){notify('Staff bench','A guard watches the bench now. You will have to wait it out.',3.5);return;}
   {const t=tactileFor(id);
@@ -904,7 +1156,7 @@ function interact(id = focus) {
     return;
   }
   if (id === 'watch') {
-    cutscene({at:locations.watch,id:'watch',kicker:'Mateo, at the west bench',title:'The pocket watch',line:'“Let them find the time it happened.”',fx:'neg',hold:2.2,mode:'ink',cue:'latch',then(){
+    cutscene({at:locations.watch,id:'watch',kicker:'Mateo, at the west bench',title:'The pocket watch',line:'“Let them find the time it happened.”',fx:'neg',hold:2.2,mode:'ink',cue:'select-major',then(){
     state.hasWatch = true;
     state.solarTime = 12;
     addExhibits(state, 0);
@@ -1007,6 +1259,7 @@ function sampleFx(dt){
 function cutscene(o){
   if(comfort){o={...o,mode:o.mode==='ink'?'cut':o.mode,hold:(o.hold??2.4)*1.25,shake:false,orbit:.08,zoom:3,inT:1.3};}
   if(cine)endCine();
+  speak((o.line||'')+' '+(o.title||''));
   release();dropKeys();heldUse=false;
   $('caption').hidden=true;$('prompt').hidden=true;$('pointer').hidden=true;arrowShown=false;$('danger').hidden=true;$('gaze').style.opacity='0';
   const at=o.at.isVector3?o.at.clone():new THREE.Vector3(...o.at);
@@ -1015,7 +1268,7 @@ function cutscene(o){
   const mode=o.mode||'return',start=camera.position.clone(),span=start.distanceTo(shot);
   // The approach arcs up and to the side through a control point instead of sliding straight.
   const side=new THREE.Vector3().subVectors(shot,start).cross(UP);if(side.lengthSq()<1e-6)side.set(1,0,0);side.normalize();
-  const ctrl=start.clone().lerp(shot,.5).addScaledVector(UP,.2+span*.12).addScaledVector(side,(o.arc??.22)*Math.min(1.6,span));
+  const ctrl=start.clone().lerp(shot,.5).addScaledVector(UP,span<.05?0:.2+span*.12).addScaledVector(side,(o.arc??.22)*Math.min(1.6,span));
   cine={o,t:0,at,shot,ctrl,start,startQ:camera.quaternion.clone(),yaw,pitch,mode,inT:o.inT??(reduced?.35:1.0),hold:o.hold??2.4,
     outT:mode==='stay'||mode==='ink'?0:mode==='cut'?.55:.8,orbit:reduced?0:(o.orbit??.2),push:o.push??.18,zoom:o.zoom??7,seed:Math.random()*10};
   if(mode==='ink')playFx(FX.enter(cine.inT+cine.hold));
@@ -1066,11 +1319,16 @@ function endCine(){const c=cine;if(!c)return;cine=null;
 function skipCine(){const c=cine;if(!c)return;const end=c.inT+c.hold;if(c.t<end)c.t=end;}
 function unpark(){if(!parked)return;const p=parked;parked=null;
   cine={o:{},t:0,at:p.pos,start:p.start,startQ:p.startQ,yaw:p.yaw,pitch:p.pitch,mode:'return',inT:0,hold:0,outT:reduced?.2:.5,endP:p.pos,endQ:p.quat,zoom:5,orbit:0,push:0,seed:0};}
-function searchCurio(id){const c=curios[id],key='curio:'+id;
-  cutscene({at:curioAt[id],dist:.95,lift:.3,swing:.15,push:.2,hold:.35,inT:.55,mode:'stay',bars:false,cue:'step',then(){
-    const pts=grant(state,key,25);audio.cue(pts?'clue':'latch');scoreHUD();persist();
-    if(pts)notify(c.name,'+25 points',2.5);
-    openHands('read',{name:c.name,title:c.title,body:c.body},c.name,curioAt[id].clone(),()=>{});}});}
+// Some searchable things are not there on Mateo's day shifts: by day the holding cell is only a store room.
+const dayShift=()=>state.stage==='memory'&&!isNight(state.solarTime);
+function searchCurio(id){const c=curios[id],key='curio:'+id,at=curioAt[id].clone();
+  const award=(k,n)=>{const pts=grant(state,k,n);audio.cue(pts?'clue':'latch');scoreHUD();persist();if(pts)notify(c.points?'Secondary clue: '+c.title:c.name,`+${pts} points`,2.5);};
+  // The detective reads the cracked glass under the UV lamp; Mateo only has his eyes.
+  if(c.uv&&character()==='Detective'){
+    if(!state.uv){const it=supplies.find(v=>v.id==='uv');notify(c.name,`Something is scratched into the glass, too faint to read. You need the ${it.name.toLowerCase()} (${it.cost} points). Press Tab to order it.`,6);return;}
+    openHands('spray',{agent:'uv',surface:'glass',reveal:{lines:c.uv}},c.name,at,()=>{grant(state,key,25);award('uv:'+id,25);notify(c.title,c.found,7);});return;}
+  award(key,c.points||25);if(c.uv)speak(c.body);   // Mateo's thought at the glass (take mateo-18, once it is recorded)
+  openHands('read',{name:c.name,title:c.title,body:c.body},c.name,at,()=>{});}
 // ───────────── Hands-on interactions ─────────────
 // Every interaction opens a tactile view (drag, pull, spray, turn) instead of a key press.
 // When the view reports done, the original game effect runs exactly as before.
@@ -1079,7 +1337,7 @@ const hands=createHands({scene,camera,canvas,sfx:puzzleSound});
 function caseFace(){return cases[state.caseIndex].face.slice(2).map(l=>l.replace(/\s{2,}/g,'  '));}
 function tactileFor(id){
   const T={
-    dispatch:['pile',{doc:{title:'Overseas lab tech wanted',lines:['$4,000 a month. No experience.','No visa needed. Start at once.','Agency fee settled on arrival.','Apply in person: Aegis.']}},'Clear the clipboard'],
+    dispatch:['pile',{doc:{title:'Overseas lab tech wanted',lines:['$4,000 a month. Start at once.','No experience. No visa needed.','Free medical: blood and tissue test.','Agency fee settled on arrival.']}},'Clear the clipboard'],
     carbon:['drawer',{label:'Archive drawer',contents:{title:'Carbon paper',lines:['One blank sheet, unused']}},'Open the archive drawer'],
     ledger:['rubbing',{title:'Blank intake pad',lines:['4  0  9']},'Shade the blank pad'],
     stamp:['press',{label:'Brass embosser'},'Emboss the receipt'],
@@ -1089,7 +1347,7 @@ function tactileFor(id){
     seal:['rubbing',{title:'Rubbing of the freight seal',lines:['K 7','PIER 9']},'Take a pencil rubbing of the seal'],
     keyTrace:['torch',{label:'the radiator',find:'key'},'Search under the radiator'],
     secureKey:['slot',{item:'key',place:'radiator'},'Hide the key'],
-    ribbon:['drawer',{label:'Ribbon spool',contents:{title:'Carbon ribbon, read backwards',lines:['St. Jude Maritime Clinic','Suite B, 4:00 a.m.']}},'Pull out the ribbon'],
+    ribbon:['drawer',{label:'Ribbon spool',contents:{title:'Carbon ribbon, read backwards',lines:['St. Jude Maritime Clinic','Suite B, 4:00 a.m.','Kidney transplant: Dr. A. Vance']}},'Pull out the ribbon'],
     waiver:['spray',{agent:'uv',surface:'waiver',reveal:{lines:['I do not consent']}},'Find the bleached signature','uv'],
     roster:['pile',{doc:{title:'Night duty roster',lines:['Patient advocate','Harbour service, 640 kHz']}},'Clear the roster'],
     flyer:['torn',{doc:{title:'Call card',lines:['Patient advocate','Harbour service','640 kHz']}},'Piece the torn card together'],
@@ -1122,7 +1380,8 @@ function tactileAfter(id){
     registration:()=>finishLead('registration'),
     weighbill:()=>finishLead('weighbill'),
     board:()=>{const i=state.caseIndex,[title,body]=cases[i].lesson;if(!state.links.includes(i)){state.links.push(i);grant(state,'board'+i,200);scoreHUD();persist();}
-      openHands('read',{name:'Detective’s notebook',title,body},'What the trail shows',locations.board.clone(),()=>nextFile());},
+      const [source,fact]=cases[i].fact;   // the notebook page, then one sourced fact about the real crime
+      openHands('read',{name:'Detective’s notebook',title,body},'What the trail shows',locations.board.clone(),()=>openHands('read',{name:source,title:'In the real world',body:fact},'In the real world',locations.board.clone(),()=>nextFile()));},
     terminal:()=>{state.gateStep='keypad';audio.cue('latch');notify('Detective','The records are safe. The keypad still needs the code.',3.5);updateHud();persist();},
     keypad:()=>openGate(1),
     shredder:()=>openGate(2),
@@ -1138,7 +1397,7 @@ function openHands(kind,opts,title,at,onDone){
   cutscene({at:p.look,from:p.cam,mode:'stay',bars:false,inT:reduced?.3:.7,hold:.05,push:0,orbit:0,zoom:0,arc:.08,cue:'step',then(){
     modal='hands';$('game').dataset.modal='hands';$('pointer').hidden=true;arrowShown=false;
     let finished=false;
-    const ui=hands.open(kind,opts,p,{veteran:comfort,say:(text)=>{$('handsSay').textContent=text;},
+    const ui=hands.open(kind,opts,p,{veteran:comfort,say:(text)=>{$('handsSay').textContent=text;speak(text);},
       done:(r)=>{if(finished)return;finished=true;closeModal();if(cine)endCine();onDone(r);capture();}});
     $('handsTitle').textContent=title;$('handsHint').textContent=ui.hint;$('handsSay').textContent='';
     handsButtons=ui.buttons;
@@ -1149,10 +1408,10 @@ let handsButtons=[];
 function openTactile(id,t,onDone){openHands(t.kind,t.opts,t.title,(locations[id]||camera.position).clone(),onDone);}
 function closeTactile(){if(hands.active){hands.close();$('hands').hidden=true;audio.sfx('static',0);}}
 function openGate(n){
-  state.gates[n-1]=true;state.gateStep='';persist();
+  state.gates[n-1]=true;state.gateStep='';startCase(state,n);persist();   // saved already in the next case, so closing the game during the door cutscene cannot strand the save
   const at=n===1?new THREE.Vector3(-2.1,1.3,6.45):new THREE.Vector3(-3.35,1.2,10.25);
   cutscene({at,from:n===1?[-1.2,1.7,4.6]:[-1.8,1.6,8.8],kicker:n===1?'Ads reported, records secured':'Evidence copied, surgery on hold',title:n===1?'The lab door opens':'The dispatch door opens',line:n===1?'Beyond it: the phlebotomy lab.':'Beyond it: the dispatch office.',fx:'flash',hold:2.2,cue:'latch',then(){
-    startCase(state,n);props.setCase(state.caseIndex);chapter('Detective / Case file '+caseNo(),cases[state.caseIndex].name);updateHud();persist();}});
+    props.setCase(state.caseIndex);chapter('Detective / Case file '+caseNo(),cases[state.caseIndex].name);updateHud();persist();}});
 }
 function finishStrip(){
   heldUse=false;
@@ -1170,7 +1429,7 @@ function saveCode(id){state.codes=[...new Set([...(state.codes||[]),id])];pendin
 function codeNote(id){if(!CODES[id]||(state.codes||[]).includes(id))return '';const [label,code]=CODES[id];
   if(autoCodes){saveCode(id);return ` Saved to your journal: ${label}, ${code}.`;}pendingCode=id;return ` ${label}: ${code}. Press N to save it to your journal.`;}
 function finishLead(id){
-  const r=record(state,id);if(!r)return;const code=codeNote(id);
+  const r=record(state,id,true);if(!r)return;const code=codeNote(id);
   let tag=discoveries[id][0]+(r.points?` (+${r.points})`:'');if(r.bonus)tag+=', early-shift bonus';
   const at=locations[id];persist();
   if(r.complete){cutscene({at,id,kicker:'Memory secured. '+tag,title:discoveries[id][0],line:discoveries[id][1],fx:'neg',hold:2.6,mode:'ink',cue:'clue',then(){
@@ -1212,12 +1471,13 @@ function hasClearPath(point) {
   }
   return true;
 }
-function isLow(){return crouched||keys.has('ControlLeft')||keys.has('ControlRight');}
+function isLow(){return crouched;}
 function move(dt) {
-  let f = (+keys.has('KeyW') - Number(keys.has('KeyS'))) - stickY,
-    r = (+keys.has('KeyD') - Number(keys.has('KeyA'))) + stickX;
-  yaw += (+keys.has('ArrowLeft') - Number(keys.has('ArrowRight'))) * dt * (comfort ? 1.15 : 1.8);
-  pitch = clamp(pitch + (+keys.has('ArrowUp') - Number(keys.has('ArrowDown'))) * dt * 1.30, -1.30, 1.35);
+  // handNav is zero unless hand tracking is turning the view, so the keys and the touch stick behave exactly as before.
+  let f = (+keys.has('KeyW') - Number(keys.has('KeyS'))) - stickY + pad.f,
+    r = (+keys.has('KeyD') - Number(keys.has('KeyA'))) + stickX + pad.r;
+  yaw += (+keys.has('ArrowLeft') - Number(keys.has('ArrowRight'))) * dt * (comfort ? 1.15 : 1.8) + (handNav.yaw + pad.yaw) * dt;
+  pitch = clamp(pitch + (+keys.has('ArrowUp') - Number(keys.has('ArrowDown'))) * dt * 1.30 + (handNav.pitch + pad.pitch) * dt, -1.30, 1.35);
   const length = Math.hypot(f, r);
   moving = length > .035;
   if (length > 1) {
@@ -1225,23 +1485,26 @@ function move(dt) {
     r /= length;
   }
   const low=isLow();
-  const speed = (low ? 1.15 : keys.has('ShiftLeft') || keys.has('ShiftRight') ? 3.40 : 2.23) *
+  const speed = (low ? 1.15 : keys.has('ShiftLeft') || keys.has('ShiftRight') || pad.run ? 3.40 : 2.23) *
     (state.soles ? 1.25 : 1);
   const dx = (-Math.sin(yaw) * f + Math.cos(yaw) * r) * dt * speed,
     dz = (-Math.cos(yaw) * f - Math.sin(yaw) * r) * dt * speed;
   if (!solid(camera.position.x + dx, camera.position.z)) camera.position.x += dx;
   if (!solid(camera.position.x, camera.position.z + dz)) camera.position.z += dz;
   if (moving) {
-    walkTime += dt * speed * 4.2;
+    walkTime += dt * speed * 6.68;   // one bob per footstep
     footTime += dt * speed;
     if (footTime > .94) {
       footTime = 0;
       audio.cue('step');
     }
   }
-  const eye = (low ? .86 : 1.65) + (moving && !reduced ? Math.sin(walkTime) * .022 : 0);
-  camera.position.y += (eye - camera.position.y) * (1 - Math.exp(-dt * 11));
-  camera.rotation.set(pitch, yaw, 0, 'YXZ');
+  // View bobbing: the head dips with each footstep and rolls a little from foot to foot, more when running.
+  // It eases in and out, is gentler in Veteran mode and off under reduced motion.
+  bobAmount += ((moving && !reduced ? (comfort ? .4 : 1) * (low ? .5 : speed > 3 ? 1.35 : 1) : 0) - bobAmount) * (1 - Math.exp(-dt * 9));
+  const eye = (low ? .86 : 1.65) - Math.cos(walkTime) * .042 * bobAmount;   // lowest as the foot lands
+  camera.position.y += (eye - camera.position.y) * (1 - Math.exp(-dt * 16));
+  camera.rotation.set(pitch + Math.cos(walkTime) * .004 * bobAmount, yaw, Math.sin(walkTime / 2) * .011 * bobAmount, 'YXZ');
   camera.updateMatrixWorld();
 }
 function inReach(id) {
@@ -1255,10 +1518,10 @@ function updateTargets(){focus=null;let best=comfort?.82:.917;camera.getWorldDir
   for(const id of extras)if(!ml.querySelector(`[data-station="${id}"]`)){const el=document.createElement('div');el.className='world-mark extra trace beacon';el.dataset.station=id;el.innerHTML='<i></i><span>Chalk trace</span>';ml.append(el);}
   for(const m of ml.children){const id=m.dataset.station,point=locations[id];const aim=forward.dot(delta.copy(point).sub(camera.position).normalize());const available=shownTargets.includes(id);if(available&&aim>best&&inReach(id)){best=aim;focus=id;}projected.copy(point).project(camera);m.hidden=aim<=0||projected.z>1||Math.abs(projected.x)>.96||Math.abs(projected.y)>.88;m.classList.toggle('primary',id===current);m.classList.toggle('beacon',!!state.powder&&leads[id]?.shift==='night');if(!m.hidden){m.style.left=(50+projected.x*50)+'%';m.style.top=(50-projected.y*50)+'%';m.querySelector('span').hidden=id!==current&&!m.classList.contains('extra')&&aim<.97;}}
   // Searchable props: the nearest one under the reticle can be focused when no lead is.
-  if(!focus&&state.stage!=='contract'){let bestC=.93;for(const [id,p] of Object.entries(curioAt)){if(Math.hypot(camera.position.x-p.x,camera.position.z-p.z)>1.7||Math.abs(camera.position.y-p.y)>1.85)continue;const aim=forward.dot(delta.copy(p).sub(camera.position).normalize());if(aim>bestC&&hasClearPath(p)){bestC=aim;focus='curio:'+id;}}}
+  if(!focus&&state.stage!=='contract'){let bestC=.93;for(const [id,p] of Object.entries(curioAt)){if(curios[id].night&&dayShift())continue;if(Math.hypot(camera.position.x-p.x,camera.position.z-p.z)>1.7||Math.abs(camera.position.y-p.y)>1.85)continue;const aim=forward.dot(delta.copy(p).sub(camera.position).normalize());if(aim>bestC&&hasClearPath(p)){bestC=aim;focus='curio:'+id;}}}
   if(!focus&&!stealth.held()){const tid=stealth.throwableInView(camera,1.9);if(tid)focus='throw:'+tid;}
   pointTo(current);
-  $('reticle').classList.toggle('over',!!focus);$('prompt').hidden=!focus||!!modal||!!inspect;$('prompt').dataset.target=focus||'';if(focus)$('prompt').lastElementChild.textContent=state.stage==='strip'?`Hold to peel the tint (${Math.round(state.strip*100)}%)`:focus==='street'?`Hold to pound on the glass (${state.pounds} of 3)`:focus==='rest'?`Wait until ${isNight(state.solarTime)?'daylight':'nightfall'}`:focus.startsWith('curio:')?curios[focus.slice(6)].verb+(state.awards.includes(focus)?'':' (+25)'):focus.startsWith('throw:')?'Pick it up':verbs[focus];$('prompt').classList.toggle('curio',!!focus&&focus.startsWith('curio:'));}
+  $('reticle').classList.toggle('over',!!focus);$('prompt').hidden=!focus||!!modal||!!inspect;$('prompt').dataset.target=focus||'';if(focus)$('prompt').lastElementChild.textContent=state.stage==='strip'?`Hold to peel the tint (${Math.round(state.strip*100)}%)`:focus==='street'?`Hold to pound on the glass (${state.pounds} of 3)`:focus==='rest'?`Wait until ${isNight(state.solarTime)?'daylight':'nightfall'}`:focus.startsWith('curio:')?curios[focus.slice(6)].verb+(state.awards.includes(focus)?'':` (+${curios[focus.slice(6)].points||25})`):focus.startsWith('throw:')?'Pick it up':verbs[focus];$('prompt').classList.toggle('curio',!!focus&&focus.startsWith('curio:'));}
 // A screen-edge arrow points at the current lead whenever it is off screen or behind the player.
 const camSpace=new THREE.Vector3();
 function pointTo(id){const el=$('pointer');const p=id&&locations[id];if(!p||modal||inspect||cine){if(arrowShown){el.hidden=true;arrowShown=false;}return;}
@@ -1275,10 +1538,12 @@ function pointTo(id){const el=$('pointer');const p=id&&locations[id];if(!p||moda
   el.querySelector('b').textContent=dist.toFixed(1)+' m';el.classList.toggle('behind',camSpace.z>0);
   if(!arrowShown){el.hidden=false;arrowShown=true;}}
 
-function clearAlert(){guardMeter=0;alertState='';fxGuardTarget=0;$('danger').hidden=true;$('gaze').style.opacity='0';$('game').dataset.threat='clear';}
+function clearAlert(){tenseT=0;pulse=0;audio.tension(false);guardMeter=0;alertState='';fxGuardTarget=0;$('danger').hidden=true;$('gaze').style.opacity='0';$('game').dataset.threat='clear';}
 function showAlert(level,amount){const visible=level!=='away';$('danger').hidden=!visible;$('game').dataset.threat=level==='away'?'clear':level;const text={approach:['Footsteps','Get below the glass.'],search:['He’s looking in',''],watched:['He can see you','Crouch!'],warn:['He’s turning your way','Step back behind cover.'],patrol:['A guard is patrolling','Stay behind cover. Throw something to distract him.'],evading:['Out of sight',''],depart:['He’s leaving','']};
-  if(level!==alertState){if(visible&&(alertState===''||alertState==='away'))restartAnim($('danger'));if(visible){$('dangerText').textContent=text[level][0];$('dangerHint').textContent=text[level][1];if(level==='watched'){audio.cue('gaze');$('sr').textContent='The guard can see you. Crouch or break sight.';}else if(level==='approach')audio.cue('keys');}alertState=level;}
-  $('danger').dataset.level=level;$('danger').querySelector('em').style.width=Math.round(amount*100)+'%';$('gaze').style.opacity=String(level==='watched'?.18+amount*.5:level==='evading'?amount*.3:0);fxGuardTarget=level==='watched'?.35+amount*.65:level==='evading'?amount*.4:0;if(level==='warn'&&time>heartbeatAt){heartbeatAt=time+.85;audio.sfx('heartbeat');}}
+  if(level!==alertState){if(visible&&(alertState===''||alertState==='away'))restartAnim($('danger'));if(visible){$('dangerText').textContent=text[level][0];$('dangerHint').textContent=text[level][1];if(level==='watched'){if(tenseT<=0)audio.cue('gaze');$('sr').textContent='The guard can see you. Crouch or break sight.';}else if(level==='approach')audio.cue('keys');}alertState=level;}
+  if(level==='watched')tenseT=7;
+  pulse=Math.max(pulse,level==='watched'?.6+.4*amount:level==='warn'?.35+.4*amount:level==='evading'?.3+.3*amount:level==='search'?.32:level==='approach'?.2:0);
+  $('danger').dataset.level=level;$('danger').querySelector('em').style.width=Math.round(amount*100)+'%';$('gaze').style.opacity=String(level==='watched'?.18+amount*.5:level==='evading'?amount*.3:0);fxGuardTarget=level==='watched'?.35+amount*.65:level==='evading'?amount*.4:0;}
 function driveMemory(dt){const before=isNight(state.solarTime),lead=untilShift(state.solarTime);passTime(state,dt);
   // The day/night sting starts 2.5 s before the light changes.
   if(lead>2.5&&untilShift(state.solarTime)<=2.5)audio.clip('daynight');if(isNight(state.solarTime)!==before){updateHud();audio.cue('shift');persist();}updateClock();state.powder=Math.max(0,state.powder-dt);state.guardTime+=dt;patrol=patrolAt(state.guardTime,state.caseIndex);const range=patrolRange(isNight(state.solarTime),state.soles),dx=guardWindow.x-eyeAt().x,dz=eyeAt().z-guardWindow.z;
@@ -1288,7 +1553,7 @@ function driveMemory(dt){const before=isNight(state.solarTime),lead=untilShift(s
   if(patrol.phase!=='away'){const beat=Math.floor(state.guardTime/(patrol.phase==='search'?1.2:.78));if(beat!==guardBeat){guardBeat=beat;audio.cue('guard');}}
   guardMeter=clamp(guardMeter+(exposed&&doorGrace>=2.5?dt/2.5*(1+.3*(state.alarm||0)):-dt*.58),0,1);
   if(roomOf(eyeAt().z)!==1)return;
-  const level=exposed?(doorGrace<2.5?'warn':'watched'):guardMeter>.02?'evading':patrol.phase;showAlert(level,level==='warn'?doorGrace/2.5:guardMeter);
+  const level=exposed?(doorGrace<2.5?'warn':'watched'):guardMeter>.02?'evading':patrol.phase;if(!roamerHot)showAlert(level,level==='warn'?doorGrace/2.5:guardMeter);   // a roaming guard who has noticed you owns the banner (driveStealth)
   if(guardMeter>=1){damage('guard');if(state.stage==='memory')showAlert('evading',0);}}
 // Roaming guards in the lab and dispatch office: active once their room is part of the story.
 const stealthStages=['memory','gate','glass','radio','verify','recoverKey','closet','board','lock'];
@@ -1303,23 +1568,37 @@ function driveStealth(dt){
   }else if(lobbyOn){lobbyOn=false;lobbyClock=30+Math.random()*30;}
   const key=lobbyOn+'/'+room2+'/'+room3;
   if(key!==stealthKey){stealthKey=key;stealth.setActive({room1:lobbyOn,room2,room3});}
-  jamTime=Math.max(0,jamTime-dt);
-  const r=stealth.update(dt,{player:eye,crouched:isLow(),night:isNight(worldTime()),soles:state.soles,jammed:jamTime>0,veteran:comfort,camera,alarm:state.alarm||0});
+  jamTime=Math.max(0,jamTime-dt);jamCool=Math.max(0,jamCool-dt);
+  // Spotted: the chase music starts at once, loud, and runs until the guard has not seen you for seven seconds.
+  tenseT=Math.max(0,tenseT-dt);audio.tension(tenseT>0);
+  // The detective works to jazz; it drops out for Mateo's memories and while a guard is after you.
+  audio.jazz(character()==='Detective'&&state.stage!=='end'&&tenseT<=0);
+  // Heartbeat: `pulse` (0..1) is how much danger you are in. It beats faster and louder as a guard nears, notices and closes in.
+  if(tenseT>0)pulse=Math.max(pulse,.55);
+  if(pulse>.06&&time>heartbeatAt){heartbeatAt=time+1.05-.68*pulse;if(!audio.play('heartbeat',.45+2.3*pulse))audio.sfx('heartbeat');}
+  pulse=Math.max(0,pulse-dt*1.2);
+  // How far your footsteps carry: nothing while still or crouched, a little when walking, a lot when running (crepe soles halve it).
+  const stepped=Math.hypot(eye.x-lastEye.x,eye.z-lastEye.z),pace=dt>0&&stepped<.5?stepped/dt:0;lastEye.x=eye.x;lastEye.z=eye.z;   // a jump (loading, a cutscene) is not a footstep
+  const noise=isLow()||pace<.6?0:(pace>2.8?4.5:1.7)*(state.soles?.5:1);
+  const r=stealth.update(dt,{player:eye,crouched:isLow(),night:isNight(worldTime()),soles:state.soles,jammed:jamTime>0,veteran:comfort,camera,alarm:state.alarm||0,noise});
   // Footsteps carry through the walls: louder as he nears, quicker when he is hunting.
+  if(active||lobbyOn)pulse=Math.max(pulse,clamp(1-r.nearestDist/6,0,1)*.45);   // a guard close by, even one who has not noticed you
   if((active||lobbyOn)&&r.nearestDist<7&&(stepClock-=dt)<=0){stepClock=r.level==='search'||r.level==='watched'?.32:.55;audio.footstep(clamp(1-r.nearestDist/7,0,1));}
   if(roomOf(eye.z)===1){ // in the lobby the corridor guard owns the warning, unless the lobby guard is on to you
-    if(lobbyOn&&r.level!=='clear'){showAlert(r.level,r.amount);if(r.level==='watched'&&r.amount>=1&&invulnerable<=0)damage('guard');}
+    roamerHot=(lobbyOn||active)&&(r.level==='watched'||r.level==='warn');
+    if(roamerHot){showAlert(r.level,r.amount);if(r.level==='watched'&&r.amount>=1&&invulnerable<=0)damage('guard');}
     return;}
+  roamerHot=false;
   if(!active)return;
   showAlert(r.level==='clear'?'away':r.level,r.amount);
   if(r.level==='watched'&&r.amount>=1&&invulnerable<=0)damage('guard');
 }
-let lobbyOn=false,lobbyClock=35,lobbyFor=0;
-let stepClock=0,noiseAt=0;
+let lobbyOn=false,lobbyClock=35,lobbyFor=0,roamerHot=false;
+let stepClock=0,noiseAt=0;const lastEye={x:0,z:0};
 // A loud puzzle (breaking glass, a stamp, a scraping drawer) brings the nearest guard to where you stand.
 const LOUD=new Set(['shatter','crack','kachunk','crunch','screech','thud','stamp']);
 function puzzleSound(name,amount){audio.sfx(name,amount);if(comfort||!LOUD.has(name)||!stealth.distract(eyeAt(),5))return;if(time>noiseAt){noiseAt=time+6;$('handsSay').textContent='The noise carries. Someone is coming.';}}
-function showHeld(kind){const el=$('held');if(!kind){el.hidden=true;return;}el.hidden=false;el.querySelector('b').textContent=kind==='beaker'?'a glass beaker':'a brass paperweight';}
+function showHeld(kind){const el=$('held');if(!kind){el.hidden=true;return;}el.hidden=false;el.querySelector('b').textContent=THROWN[kind].name;}
 function back() {
   if (['contract', 'end', 'gameOver', 'accountSave', 'quiz'].includes(modal)) return;
   if(modal==='dossier'||modal==='debrief'||modal==='results'){ending();return;}
@@ -1351,6 +1630,13 @@ function dialogAction(action, button) {
     case 'back':
       back();
       break;
+    case 'hand-toggle':setSpatial(inputMode!=='spatial').then(()=>{if(modal==='pause'&&!guide)repause(action);});break;
+    case 'hand-speed':handSpeed=(handSpeed+1)%HAND_SPEEDS.length;putStored('redacted-donor.hands.speed',HAND_SPEEDS[handSpeed][0]);repause(action);break;
+    // Smooth: the camera is read in the background (it falls back by itself where that is slower). Classic: on the game's own thread, as at first.
+    case 'hand-engine':spatial.engine=spatial.engine==='main'?'auto':'main';spatial.stop();spatial.start().then(()=>{if(modal==='pause')repause(action);},(e)=>{setSpatial(false);spatialNote(e.message);if(modal==='pause')repause(action);});break;
+    case 'hand-camera':nextCamera().then(()=>{if(modal==='pause')repause(action);});break;
+    case 'hand-setup':startCalibration();break;
+    case 'hand-tutorial':startTutorial();break;
     case 'file-score':fileScore();break;
     case 'acct-tab':acctKind=button.dataset.k;accountPage();break;
     case 'quiz-pick':quizPick(Number(button.dataset.k));break;
@@ -1422,7 +1708,7 @@ function dialogAction(action, button) {
       break;
     case 'buy':
       if (buy(state, button.dataset.id)) {
-        audio.cue('latch');
+        audio.sfx('select');
         modalMessage = `${supplies.find((v) => v.id === button.dataset.id).name} used.`;
         updateHud();
         persist();
@@ -1457,7 +1743,7 @@ function dialogAction(action, button) {
       endDossier();
       break;
     case 'revive':
-      revive(state);spawnForStage();props.setCase(state.caseIndex);tracked='';updateHud();persist();closeModal();
+      revive(state);calmGuards();spawnForStage();props.setCase(state.caseIndex);tracked='';updateHud();persist();closeModal();
       notify('Detective', 'The current file has been reopened at the desk.');
       capture();
       break;
@@ -1480,7 +1766,10 @@ $('panelBody').addEventListener('pointerup',endWorkDrag);$('panelBody').addEvent
 $('begin').onclick = () => enterGame(!!stored);
 $('handsBack').onclick = () => back();
 for (const b of document.querySelectorAll('.spatial-toggle')) b.onclick = () => setSpatial(inputMode !== 'spatial');
-if (new URLSearchParams(location.search).has('spatialtest')) window.__spatial = spatial; // scripted hands for automated tests
+$('spatialCam').onclick = nextCamera; $('spatialCal').onclick = startCalibration; $('spatialTut').onclick = startTutorial; $('spatialSkip').onclick = skipGuide;
+// Scripted hands for automated tests (tools/spatial-browser.test.mjs): feed landmarks, read where the player and the guide are.
+if (new URLSearchParams(location.search).has('spatialtest')) Object.assign(window, { __spatial: spatial, __cam: () => [camera.position.x, camera.position.z, yaw, pitch], __board: (x, y) => hands.screenAt(x, y), __limbs: () => hands.limbs, __audio: audio, __info: () => ({ ...renderer.info, scale: pace.scale }), __guards: () => ['room1', 'room2', 'room3'].map((k) => stealth.guardAt(k)), __open: (kind, opts) => openHands(kind, opts, 'Test', camera.position.clone().add(camera.getWorldDirection(new THREE.Vector3()).setY(0).normalize()).setY(1.1), () => {}),
+  __guide: () => guide && { cal: !!guide.cal, tut: !!guide.tut, i: guide.i, wait: guide.wait, target: guide.target?.toArray() } });
 $('panelBody').addEventListener('input', (e) => { if (e.target.classList?.contains('bad')) for (const f of $('panelBody').querySelectorAll('.bad')) f.classList.remove('bad', 'run'); });
 $('handsVet').addEventListener('click', (e) => { const b = e.target.closest('[data-hands]'); if (b && b.dataset.hands !== 'hold') handsButtons[+b.dataset.hands]?.[1](); });
 for (const [type, on] of [['pointerdown', true], ['pointerup', false], ['pointerleave', false], ['pointercancel', false]]) $('handsVet').addEventListener(type, (e) => { if (e.target.closest('[data-hands=hold]')) hands.setHeld(on); });
@@ -1608,6 +1897,9 @@ window.addEventListener('keydown', (e) => {
     else if (k === 'Escape') e.target.blur();
     return;
   }
+  // H turns hand tracking on or off wherever you are: the title screen, a menu, a puzzle, a cutscene or the room.
+  if (k === 'KeyH') { e.preventDefault(); if (!e.repeat) setSpatial(inputMode !== 'spatial').then(() => { if (modal === 'pause' && !guide) repause('hand-toggle'); }); return; }
+  if (guide) { if (k === 'Escape' && !e.repeat) { e.preventDefault(); skipGuide(); } return; }   // hand setup or tutorial: Esc skips, nothing else leaks into the game
   if (cine) {
     if (['Escape', 'Space', 'Enter', 'KeyE'].includes(k) && !e.repeat) { e.preventDefault(); skipCine(); }
     return;
@@ -1647,9 +1939,9 @@ window.addEventListener('keydown', (e) => {
     }
     return;
   }
-  if (['Tab', 'Space', 'Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(k)) {
-    e.preventDefault();
-  }
+  // Every key in play is the game's. A key the page leaves unhandled goes back to macOS, which answers with the alert
+  // sound on each repeat of a held W. Function keys and Enter (a focused button) keep their normal job.
+  if (!/^F\d+$/.test(k) && k !== 'Enter' && k !== 'NumpadEnter') e.preventDefault();
   if (e.repeat) return;
   keys.add(k);
   if (inspect) {
@@ -1677,8 +1969,16 @@ window.addEventListener('keydown', (e) => {
     interact();
   }
   if (k === 'KeyG' && stealth.held()) aiming = { power: 0 };
-  // Watch overdrive: flip day and night anywhere and jam the guards' radios.
-  if (k === 'KeyO' && state.overdrive && state.stage === 'memory') { audio.clip('daynight'); waitForShift(state); state.guardTime = 0; jamTime = 8; audio.cue('shift'); notify('Watch overdrive', isNight(state.solarTime) ? 'Night falls. Guard radios jammed.' : 'Morning. Guard radios jammed.', 3); updateHud(); persist(); }
+  // Watch overdrive: jams the guards' radios for 8 seconds, then recharges. It works for Mateo and for the detective;
+  // in Mateo's memories it also flips day and night.
+  if (k === 'KeyO' && !e.repeat && state.overdrive && stealthStages.includes(state.stage)) {
+    if (jamCool > 0) { audio.cue('latch'); notify('Watch overdrive', `Still recharging: ${Math.ceil(jamCool)} seconds.`, 2.2); }
+    else {
+      const memory = state.stage === 'memory'; jamTime = 8; jamCool = JAM_COOLDOWN;
+      if (memory) { audio.clip('daynight'); waitForShift(state); state.guardTime = 0; }
+      audio.cue('shift'); notify('Watch overdrive', (memory ? (isNight(state.solarTime) ? 'Night falls. ' : 'Morning. ') : '') + `Guard radios jammed for 8 seconds. Recharges in ${JAM_COOLDOWN}.`, 3.5); updateHud(); persist();
+    }
+  }
 });
 window.addEventListener('keyup', (e) => {
   keys.delete(e.code);
@@ -1706,7 +2006,11 @@ function frame(now) {
   requestAnimationFrame(frame);
   if (document.hidden) return;
   const real = previous ? Math.min(.20, (now - previous) / 1000) : 0;
+  if (started) keepPace(real);
   previous = now;
+  if (inputMode === 'spatial' && renderer) driveSpatial(now);
+  drivePad(now);
+  if (guide?.tut) { tutorialFrame(real); return; }
   // In the standard game the clinic keeps running while a puzzle is open: guards patrol, the clock turns.
   const handsLive = modal === 'hands' && !comfort && started && !cine;
   const dt = modeActive() || handsLive ? real : 0;
@@ -1715,12 +2019,11 @@ function frame(now) {
   if (dt && state.stats) state.stats.seconds += dt;
   if (!started || !renderer) return;
   if (cine) updateCine(real);
-  if (inputMode === 'spatial') driveSpatial(now);
   if (dt && RESCUE_STAGES.includes(state.stage)) { state.rescueLeft = (state.rescueLeft ?? (comfort ? 480 : 240)) - dt; updateClock(); if (state.rescueLeft <= 0) rescueTimeout(); }
   if (hands.active) { hands.update(real); needsDraw = true; const ring = document.getElementById('handsRing'); if (ring) ring.style.width = Math.round(hands.holdProgress * 100) + '%'; }
   if (leaveT >= 0) { const before = leaveT; leaveT += real; props.leave(Math.min(1, leaveT / 2.7)); if (Math.floor(leaveT / .42) !== Math.floor(before / .42) && leaveT < 2.6) audio.cue('guard'); }
   const fxNow = sampleFx(real);
-  renderer.setFx(fxNow.neg, fxNow.ink, fxNow.warp);
+  renderer.setFx(fxNow.neg, fxNow.ink, fxNow.warp); renderer.setOverlay(hands.active);
   // The detective's present-day scenes are lit by the spotlight on the evidence board.
   detectiveBlend += ((DETECTIVE_STAGES.includes(state.stage) ? 1 : 0) - detectiveBlend) * (1 - Math.exp(-real * 2.5));
   renderer.setDetective(detectiveBlend);
@@ -1767,12 +2070,30 @@ function frame(now) {
       saveTimer = 0;
     }
   }
-  const ease=1-Math.exp(-real*7);memoryBlend+=((state.stage==='memory'?1:0)-memoryBlend)*ease;const solar=worldTime(), sky=daylight(solar);props.setCase(state.caseIndex);props.animate(time,state,patrol,sky,solar,patrolRange(isNight(solar),state.soles),state.strip);annex.face(camera,state.stage==='memory'&&isNight(state.solarTime)&&state.caseIndex>=1);
-  if(live||cine||cineBlend>.002||fxAnim||fxGuard>.002||state.stage==='contract'||needsDraw){renderer.render(time,memoryBlend,sky.sun,sky.altitude,solar/DAY_LENGTH*Math.PI*2,state.strip,cineBlend);needsDraw=false;}
+  const ease=1-Math.exp(-real*7);memoryBlend+=((state.stage==='memory'?1:0)-memoryBlend)*ease;const solar=worldTime(), sky=daylight(solar);props.setCase(state.caseIndex);props.animate(time,state,patrol,sky,solar,patrolRange(isNight(solar),state.soles),state.strip);annex.face(camera,state.stage==='memory'&&isNight(state.solarTime)&&state.caseIndex>=1);annex.haunt(camera,!dayShift(),state.awards.includes('uv:cellGlass'));
+  if(live||cine||cineBlend>.002||fxAnim||fxGuard>.002||state.stage==='contract'||needsDraw){
+    // Hand tracking, walking the rooms: shift the eye up to 1.6 cm sideways and 1 cm up or down for this frame's picture only,
+    // so near things slide against far ones. Not in puzzles (the hand must land where it points), cutscenes, menus or Veteran mode.
+    const sway=inputMode==='spatial'&&live&&!hands.active&&!cine&&!modal&&!inspect&&!comfort&&!reduced,k=1-Math.exp(-real*5);
+    lean.x+=((sway?lean.tx:0)-lean.x)*k;lean.y+=((sway?lean.ty:0)-lean.y)*k;
+    leanBy.set(lean.x*.032,-lean.y*.02,0).applyQuaternion(camera.quaternion);camera.position.add(leanBy);camera.updateMatrixWorld();
+    renderer.render(time,memoryBlend,sky.sun,sky.altitude,solar/DAY_LENGTH*Math.PI*2,state.strip,cineBlend);needsDraw=false;
+    camera.position.sub(leanBy);camera.updateMatrixWorld();}
 }
 let needsDraw = true;
+// Adaptive resolution: full detail wherever the machine keeps up. If frames average slower than 26 ms for two seconds
+// the picture is drawn a step smaller (down to 60%); if they are comfortably fast again it steps back up.
+const pace = { scale: 1, avg: 16, t: 0 };
+function keepPace(real) {
+  if (real <= 0 || real > .15 || document.hidden || inputMode === 'spatial') return;   // a stall, a hidden tab or the camera model's own cost says nothing about drawing
+  pace.avg += (real * 1000 - pace.avg) * .05; pace.t += real;
+  if (pace.t < 2) return;
+  pace.t = 0;
+  const next = pace.avg > 26 ? Math.max(.6, pace.scale - .1) : pace.avg < 12.5 ? Math.min(1, pace.scale + .1) : pace.scale;
+  if (next !== pace.scale) { pace.scale = next; resize(); }
+}
 function resize() {
-  renderer?.resize(Math.max(1, innerWidth), Math.max(1, innerHeight));
+  renderer?.resize(Math.max(1, innerWidth), Math.max(1, innerHeight), pace.scale);
   needsDraw = true;
   drawThread();
 }

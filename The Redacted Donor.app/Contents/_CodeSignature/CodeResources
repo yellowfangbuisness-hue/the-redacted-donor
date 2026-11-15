@@ -8,9 +8,13 @@
 		<data>
 		/9zCimeGRsB+Ft0sACy0hknH7hU=
 		</data>
+		<key>Resources/hand-tracking.js</key>
+		<data>
+		KkTzjnvoP4WhJUt4mIZZHe5TTEc=
+		</data>
 		<key>Resources/index.html</key>
 		<data>
-		NL1tAKcXhtbKXFLij6nMzUPlw/8=
+		nBDrYYVbFm9ob0KwPofoD8m3RdY=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -22,11 +26,18 @@
 			exCOhZgmwsUXIxPV/NKSr9qrhDfMKXXApI94ZBlrhQ8=
 			</data>
 		</dict>
+		<key>Resources/hand-tracking.js</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			y5ATezisvaX3KUJmBCd9gXQMmMYI3mC4r1lGjRS7VQ0=
+			</data>
+		</dict>
 		<key>Resources/index.html</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			Z+kU2iejE8EO/Vk+u7GcJzupSYD84uofmJqQTH4eyC4=
+			/lZh8x1MJ2ixFC8DSFQ5PDhVFIxVeaynnt0XrPGeV5U=
 			</data>
 		</dict>
 	</dict>

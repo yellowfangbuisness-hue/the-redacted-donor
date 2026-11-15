@@ -8,7 +8,7 @@ const DEVICE = 'redacted-donor.cloud.key', OUTBOX = 'redacted-donor.cloud.outbox
   NAMED = 'redacted-donor.cloud.named', SYNC = 'redacted-donor.cloud.sync', CODE = 'redacted-donor.cloud.code', IGNORE = 'redacted-donor.cloud.ignore';
 const get = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 const put = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch { /* private window */ } };
-const json = (k, fallback) => { try { return JSON.parse(get(k)) ?? fallback; } catch { return fallback; } };
+const json = (k, fallback) => { try { const v = JSON.parse(get(k)) ?? fallback; return Array.isArray(fallback) && !Array.isArray(v) ? fallback : v; } catch { return fallback; } };   // a list stays a list even if storage was tampered with
 
 function deviceKey() {
   let k = get(DEVICE);
@@ -35,6 +35,7 @@ const rpc = (fn, args = {}) => call(`/rest/v1/rpc/${fn}`, { method: 'POST', body
 // the account's player; signed out, the device key is the player (guest). ──
 const SESSION = 'redacted-donor.cloud.account';
 let session = json(SESSION, null), refreshing = null;
+if (!session || typeof session.token !== 'string' || typeof session.email !== 'string') session = null;   // corrupt storage must not lock the game out
 function keep(s) {
   session = s ? { token: s.access_token, refresh: s.refresh_token, expires: Date.now() + (s.expires_in || 3600) * 1000, email: s.user?.email || session?.email, id: s.user?.id || session?.id } : null;
   put(SESSION, session && JSON.stringify(session));

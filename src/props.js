@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { paintDocument, paintPlaque } from './paper.js';
 import * as models from './models.js';
+import { Actor, Cutscene, SpriteSheetAnimator, makeSheet, makeHandSheet, walk, wait, act, turn, call, together } from './sprites.js';
 import { cases, evidence } from './casebook.js';
 import {isNight, DAY_LENGTH, SEARCH_HALF_ANGLE} from './shifts.js';
 
@@ -24,18 +25,48 @@ function shape(c, path, color) {
   c.fill(new Path2D(path));
 }
 
-function portrait(c, variant) {
+// One frame of a character cut-out. The artwork is the original illustration; `pose` moves it the way a paper puppet
+// moves: the whole figure bounces and rocks from the feet, the two halves of the coat below the split lift in turn like
+// legs, and the head and hat tilt on the neck. With no pose it is the drawing exactly as it always was.
+const REST = { bob: 0, lean: 0, legs: 0, head: 0, nod: 0 };
+const COAT = 'M55 630 L72 417 87 283 103 238 143 210 153 186 194 183 204 213 250 231 277 260 305 422 289 450 269 431 247 340 243 474 263 635 197 639 175 496 162 636 Z';
+function portrait(c, variant, pose = REST) {
   // Illustrator's cutouts are drawn on transparent stock, with the street behind the negative space.
   const guard = variant === 'guard',
     man = variant === 'recruiter',
     light = man ? '#c39960' : guard ? '#64523a' : '#76654e';
   c.clearRect(0, 0, 360, 640);
   c.save();
+  c.translate(180, 638); c.rotate(pose.lean); c.translate(-180, -638 - pose.bob);
+  // Below the split in the coat: each half lifts in turn, so the figure steps from foot to foot.
+  for (const side of [-1, 1]) {
+    c.save(); c.translate(0, -Math.max(0, side * -pose.legs) * 14);
+    c.beginPath(); c.rect(side < 0 ? 0 : 176, 490, side < 0 ? 176 : 184, 170); c.clip();
+    shape(c, COAT, '#231d17'); c.restore();
+  }
+  // The coat, shirt and arms.
+  c.save(); c.beginPath(); c.rect(0, 178, 360, 314); c.clip();
+  shape(c, COAT, '#231d17');
+  shape(c, 'M143 209 L159 190 177 210 190 194 203 209 186 285 167 319 Z', light);
+  shape(c, 'M167 209 L183 209 177 222 184 263 172 288 165 268 173 221 Z', '#2a2119');
   shape(
     c,
-    'M55 630 L72 417 87 283 103 238 143 210 153 186 194 183 204 213 250 231 277 260 305 422 289 450 269 431 247 340 243 474 263 635 197 639 175 496 162 636 Z',
-    '#231d17',
+    'M146 203 L129 215 120 258 138 258 129 273 170 330 Z M201 204 L225 218 241 256 217 255 224 267 175 325 Z',
+    '#55422e',
   );
+  stroke(c, [[148, 206], [133, 220], [123, 255], [141, 255], [132, 270], [165, 315]], light, 2);
+  stroke(c, [[204, 208], [232, 245], [214, 254], [222, 264], [186, 300]], light, 2);
+  stroke(c, [[107, 239], [95, 266], [78, 354]], light, 4);
+  stroke(c, [[253, 242], [270, 263], [294, 396]], light, 3);
+  for (let i = 0; i < 24; i++) {
+    const x = 95 + i * 2.6;
+    stroke(c, [[x, 250 + (i % 4) * 3], [x - 13, 297 + i % 10]], '#57442f', 1);
+  }
+  stroke(c, [[175, 330], [172, 393], [175, 450]], light, 2);
+  for (const y of [338, 369, 405]) oval(c, 179, y, 2.4, 3.0, light);
+  c.restore();
+  // The head and hat, tilting on the neck.
+  c.translate(178, 186); c.rotate(pose.head); c.translate(-178, -186 - pose.nod);
   shape(
     c,
     'M125 87 Q126 58 157 49 Q188 38 207 60 L222 85 214 121 221 140 207 149 202 176 185 188 162 181 153 159 139 149 137 125 131 121 Z',
@@ -58,30 +89,13 @@ function portrait(c, variant) {
   );
   stroke(c, [[95, 94], [146, 84], [191, 79], [242, 76]], light, 3);
   stroke(c, [[139, 54], [143, 35], [164, 40]], light, 2);
-  shape(c, 'M143 209 L159 190 177 210 190 194 203 209 186 285 167 319 Z', light);
-  shape(c, 'M167 209 L183 209 177 222 184 263 172 288 165 268 173 221 Z', '#2a2119');
-  shape(
-    c,
-    'M146 203 L129 215 120 258 138 258 129 273 170 330 Z M201 204 L225 218 241 256 217 255 224 267 175 325 Z',
-    '#55422e',
-  );
-  stroke(c, [[148, 206], [133, 220], [123, 255], [141, 255], [132, 270], [165, 315]], light, 2);
-  stroke(c, [[204, 208], [232, 245], [214, 254], [222, 264], [186, 300]], light, 2);
-  stroke(c, [[107, 239], [95, 266], [78, 354]], light, 4);
-  stroke(c, [[253, 242], [270, 263], [294, 396]], light, 3);
-  for (let i = 0; i < 24; i++) {
-    const x = 95 + i * 2.6;
-    stroke(c, [[x, 250 + (i % 4) * 3], [x - 13, 297 + i % 10]], '#57442f', 1);
-  }
   for (let i = 0; i < 14; i++) {
     stroke(c, [[172 + i * 1.5, 145 + i % 3], [166 + i * 1.5, 156 + i % 4]], '#523925', 1);
   }
-  stroke(c, [[175, 330], [172, 393], [175, 450]], light, 2);
-  for (const y of [338, 369, 405]) oval(c, 179, y, 2.4, 3.0, light);
   c.restore();
 }
 
-export function furnish(scene, factory, room) {
+export function furnish(scene, factory, room, camera) {
   const unit = new THREE.BoxGeometry(1, 1, 1),
     plane = new THREE.PlaneGeometry(1, 1),
     circle = new THREE.CylinderGeometry(1, 1, 1, 18);
@@ -219,12 +233,20 @@ export function furnish(scene, factory, room) {
     return s;
   }
   const silhouette = (name) => factory.make('character-' + name, 360, 640, (c) => portrait(c, name));
-  const recruiter = sheet(root, silhouette('recruiter'), .05, 1.46, -.87, 1.80, 2.93, true);
-  const enforcer = sheet(root, silhouette('guard'), 1.30, 1.40, .64, 1.15, 2.78, true);
-  enforcer.visible = false;
-  // Opening exit: 0..1 walks both men from their places to the staff door; null when not playing.
-  let exitT = null;
-  const HOME = { r: [.05, -.87], e: [1.30, .64] }, DOOR = [4.05, .1];
+  // The recruiter and his enforcer: animated cut-outs with bodies, so they walk round the desk, never through it.
+  // Their sheets are painted from the same illustrations as before, one frame per pose.
+  const cutout = (name) => makeSheet('character-' + name, { w: 360, h: 640, paint: (c, pose) => portrait(c, name, pose) });
+  const recruiter = new Actor(cutout('recruiter'), { height: 2.93, width: 1.80, speed: 1.15 }), enforcer = new Actor(cutout('guard'), { height: 2.78, width: 1.4, speed: 1.5 });
+  root.add(recruiter.root, enforcer.root); recruiter.place(.05, -.89, 0); enforcer.place(3.9, .1, -1.2); enforcer.root.visible = false;
+  // The affidavit he slides across the desk, and Mateo's hand, which signs and snaps the nib.
+  const affidavit = paper(root, 'affidavit', ['AEGIS GLOBAL PATHWAYS', 'MEDICAL AFFIDAVIT', 'Voluntary donation', 'Sign here: ________'], .1, 1.15, -.2, .5, .36, .05);
+  affidavit.visible = false;
+  const penHand = new SpriteSheetAnimator(makeHandSheet(), { height: .5, fps: 9 }); penHand.mesh.position.set(.42, 1.1, .78); penHand.mesh.visible = false; root.add(penHand.mesh);
+  // Opening exit: 0..1 while both men walk to the staff door; null when not playing.
+  let exitT = null, scene0 = null, beat0 = -1, slide = 0, left = false, sceneClock = null;
+  const DOOR = [4.05, .1], PACE = [[-1.25, -.89], [.95, -.89]];
+  // He paces behind the desk, back and forth, until something stops him.
+  const pacing = () => new Cutscene([walk(recruiter, [PACE[0]], { pace: .8 }), wait(.9), walk(recruiter, [PACE[1]], { pace: .8 }), wait(.9)], { loop: true });
   const papers = cases.map((c, i) => docTex('case-' + i, c.face, 1.04, .67, 1024));
   const reverse = docTex('reverse', [
     'AEGIS ARCHIVE',
@@ -733,14 +755,35 @@ export function furnish(scene, factory, room) {
       hinge.rotation.y += (target - hinge.rotation.y) * ease;
     });
     const leaving = exitT !== null && exitT < 1;
-    recruiter.visible = state.stage === 'contract' || leaving;
-    if (recruiter.visible) recruiter.rotation.z = Math.sin(t * .95) * .008;
-    enforcer.visible = (state.stage === 'contract' || leaving) && state.coercion === 'refused';
-    // The enforcer reaches the door first; each man bobs as he walks.
-    for (const [fig, home, y, lag] of [[recruiter, HOME.r, 1.46, .25], [enforcer, HOME.e, 1.40, 0]]) {
-      const k = leaving ? Math.min(1, Math.max(0, (exitT - lag) / (1 - lag))) : 0, e = k * k * (3 - 2 * k);
-      fig.position.set(home[0] + (DOOR[0] - home[0]) * e, y + (k > 0 && k < 1 ? Math.abs(Math.sin(t * 9)) * .035 : 0), home[1] + (DOOR[1] - home[1]) * e);
-      if (leaving && k >= .97) fig.visible = false;
+    // ── The opening scene, choreographed. Each beat of the contract starts a short sequence of steps. ──
+    // The scene plays in real time: the game's own clock stands still while the contract panel is up.
+    const nowS = performance.now() / 1000, dt = Math.min(.1, nowS - (sceneClock ?? nowS)); sceneClock = nowS;
+    const inScene = state.stage === 'contract', refused = state.coercion === 'refused';
+    if (!inScene && !leaving) { recruiter.root.visible = enforcer.root.visible = affidavit.visible = penHand.mesh.visible = false; beat0 = -1; scene0 = null; left = false; }
+    else {
+      if (inScene && state.beat !== beat0) {
+        beat0 = state.beat; left = false;
+        if (beat0 === 0) { recruiter.place(.05, -.89, 0); slide = 0; scene0 = pacing(); }
+        // Beat 1: he comes to the middle of the desk, leans in and slides the affidavit across, then goes back to pacing.
+        else if (beat0 === 1) scene0 = new Cutscene([walk(recruiter, [[.1, -.89]]), turn(recruiter, 0), call(() => { slide = Math.max(slide, .001); }), act(recruiter, 'interact', 1.3), wait(1.6), call(() => { scene0 = pacing(); })]);
+        // Beat 2: if Mateo refuses, the enforcer comes in through the staff door, round the end of the desk, and reaches across it.
+        else { slide = Math.max(slide, .001); enforcer.place(3.9, .1, -1.2);
+          scene0 = new Cutscene([walk(recruiter, [[.1, -.89]]), turn(recruiter, 0), together(act(recruiter, 'interact', 1.6), refused ? walk(enforcer, [[2.65, -.7], [1.45, -.95]]) : wait(.1)), refused ? turn(enforcer, 0) : wait(.1), refused ? act(enforcer, 'interact', 1.6) : wait(.1)]);
+          if (!refused) { penHand.play('idle'); penHand.play('snap', { once: true }); } }
+      }
+      // Leaving: both men walk out by the staff door, each along his own side of the desk.
+      if (leaving && !left) { left = true; scene0 = new Cutscene([together(walk(recruiter, [[2.6, -.89], [3.5, -.35], DOOR], { pace: 1.75 }), walk(enforcer, [[2.65, -.7], DOOR], { pace: 1.6 }))]); }
+      scene0?.update(dt);
+      recruiter.root.visible = (inScene || leaving) && !(leaving && !recruiter.busy);
+      enforcer.root.visible = (inScene || leaving) && refused && state.beat >= 2 && !(leaving && !enforcer.busy);
+      if (!recruiter.busy && !leaving && recruiter.heldFor <= 0) recruiter.heading = 0;                          // at rest he faces Mateo
+      if (!enforcer.busy && !leaving) enforcer.heading = 0;
+      recruiter.update(dt, camera); enforcer.update(dt, camera);
+      if (slide > 0) slide = Math.min(1, slide + dt / .9);
+      const ease = slide * slide * (3 - 2 * slide);
+      affidavit.visible = slide > 0; affidavit.position.z = -.2 + ease * .78; affidavit.rotation.z = .05 + ease * .12;
+      penHand.mesh.visible = inScene && state.beat === 2 && !refused;
+      if (penHand.mesh.visible) penHand.update(dt, camera);
     }
     passport.visible = state.stage === 'contract' && !state.confiscated;
     watch.visible = ['contract', 'street'].includes(state.stage);
@@ -768,15 +811,16 @@ export function furnish(scene, factory, room) {
     for (let i = 0; i < walkers.length; i++) {
       const { p, legs } = walkers[i], speed = .15 + i * .023, sign = i % 2 ? 1 : -1;
       const react = state.reaction > 0 && (state.pounds === 1 ? i === 0 : state.pounds === 2 && i < 2);
-      if (!react) p.userData.walk = (p.userData.walk || 0) + (state.dt || 0) * speed;
+      // The finale: as the tint comes off the glass, each passer-by in turn stops walking, turns to the window and looks in.
+      const looking = !react && (state.stage === 'end' || (state.stage === 'strip' && strip > .25 + i * .13));
+      if (!react && !looking) p.userData.walk = (p.userData.walk || 0) + (state.dt || 0) * speed;
       const progress = (p.userData.walk || 0) + i * .71, pos = (progress % 2.8) - 1.40;
       p.position.x = react ? -.36 + i * .45 : sign * pos;
-      p.scale.x = sign * (state.pounds === 2 && react ? .90 : 1);
-      p.visible = Math.abs(p.position.x) < 1.27 && (i<2 || sky.sun>.30 || state.stage==='street');
-      if (react && state.pounds === 1) p.children[0].rotation.z = .06;
-      else p.children[0].rotation.z = 0;
-      p.rotation.z = react ? (i % 2 ? .035 : -.036) : Math.sin(t * 4.3 + i) * .018;
-      legs.forEach((l, j) => l.rotation.z = react ? 0 : Math.sin(t * 5 + i + j * Math.PI) * .35);
+      p.scale.x = (looking ? 1 : sign) * (state.pounds === 2 && react ? .90 : 1);
+      p.visible = Math.abs(p.position.x) < 1.27 && (i<2 || sky.sun>.30 || state.stage==='street' || looking);
+      p.children[0].rotation.z = react && state.pounds === 1 ? .06 : looking ? -.045 : 0;                        // head back, looking up at the window
+      p.rotation.z = react ? (i % 2 ? .035 : -.036) : looking ? 0 : Math.sin(t * 4.3 + i) * .018;
+      legs.forEach((l, j) => l.rotation.z = react || looking ? 0 : Math.sin(t * 5 + i + j * Math.PI) * .35);
     }
     film.scale.x = 2.86 * (1 - strip);
     film.position.x = -1.43 * strip;
@@ -787,5 +831,5 @@ export function furnish(scene, factory, room) {
       key.children.forEach((m) => m.material = mat(state.stage === 'memory' ? '#63ffff' : brass));
     }
   }
-  return { casePaper, setCase, animate, leave: (v) => { exitT = v; }, lamp: room.lampTarget, window, guardTexture: silhouette('guard') };
+  return { casePaper, setCase, animate, leave: (v) => { exitT = v; }, lamp: room.lampTarget, window, guardSheet: cutout('guard') };
 }

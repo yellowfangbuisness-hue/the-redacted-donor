@@ -7,11 +7,16 @@ export class GameAudio extends InkAudio {
     const c = this.context;
     if (!c || this.decoding) return;
     this.decoding = true; this.recorded = this.recorded || {};
-    for (const [name, data] of Object.entries(RECORDED)) {
-      const bin = atob(data), bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      c.decodeAudioData(bytes.buffer).then((b) => { this.recorded[name] = b; if (name.startsWith('amb-')) this.ambience(); }).catch(() => {});
-    }
+    // One at a time, smallest first: clicks, steps and the first voice lines are ready within a moment of Begin,
+    // the long music tracks follow, and the game never stalls unpacking eleven megabytes in one frame.
+    (async () => {
+      for (const [name, data] of Object.entries(RECORDED).sort((a, b) => a[1].length - b[1].length)) {
+        let bytes;
+        if (Uint8Array.fromBase64) bytes = Uint8Array.fromBase64(data);
+        else { const bin = atob(data); bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); }
+        try { this.recorded[name] = await c.decodeAudioData(bytes.buffer); if (name.startsWith('amb-')) this.ambience(); } catch { /* an unreadable take falls back to the synthesised sound */ }
+      }
+    })();
   }
   take(name) {
     const r = this.recorded || {}, pick = Object.keys(r).filter((k) => k === name || k.startsWith(name + '-') && /^\d+$/.test(k.slice(name.length + 1)));
@@ -22,6 +27,7 @@ export class GameAudio extends InkAudio {
     if (!buffer || !c || this.muted || !this.active || c.state !== 'running') return !!buffer;
     const src = c.createBufferSource(), g = c.createGain();
     src.buffer = buffer; g.gain.value = 5 * volume; // the master bus sits at 0.16
+    if (name === 'guard') src.playbackRate.value = .74 + Math.random() * .2;   // the guard's boots: pitched down, and never quite the same twice
     src.connect(g).connect(this.nodes.master); src.start();
     src.onended = () => { src.disconnect(); g.disconnect(); };
     return true;
@@ -41,10 +47,51 @@ export class GameAudio extends InkAudio {
       if (name === 'amb-memory') this.nodes.heartGain.disconnect();
     }
     const room = this.amb['amb-room'], mem = this.amb['amb-memory'], now = c.currentTime;
-    room?.gain.setTargetAtTime(this.memory && mem ? 0 : 2.5, now, .4);
-    mem?.gain.setTargetAtTime(this.memory ? 2.5 : 0, now, .4);
+    room?.gain.setTargetAtTime(this.jazzOn ? .8 : 2.5, now, .4);    // the basement ambience never stops; it sits back under the jazz
+    mem?.gain.setTargetAtTime(this.memory ? 1.5 : 0, now, .4);     // Mateo's memories add the heartbeat bed on top
   }
   setMemory(value) { super.setMemory(value); this.ambience(); }
+  // Voice lines (ids from VOICELINES.md), played one after another. One voice at a time: a new call cuts the last one off.
+  // A line that is still being decoded is waited for briefly; one that was never recorded is skipped.
+  say(...ids) {
+    const token = this.sayToken = (this.sayToken || 0) + 1, c = this.context;
+    try { this.voice?.stop(); } catch { /* already ended */ }
+    this.voice = null;
+    if (!c || this.muted || !this.active || c.state !== 'running') return;
+    const next = (i, waited = 0) => {
+      if (token !== this.sayToken || i >= ids.length) return;
+      const key = 'vo/' + ids[i], buffer = this.recorded?.[key];
+      if (!buffer) { if (key in RECORDED && waited < 5) setTimeout(() => next(i, waited + .25), 250); else next(i + 1); return; }
+      const src = c.createBufferSource(), g = c.createGain();
+      src.buffer = buffer; g.gain.value = 7; src.connect(g).connect(this.nodes.master); src.start(); this.voice = src;
+      src.onended = () => { src.disconnect(); g.disconnect(); if (this.voice === src) this.voice = null; setTimeout(() => next(i + 1), 280); };
+    };
+    next(0);
+  }
+  // The detective's room: the jazz tracks, one after the other, under everything else. Silent for Mateo and during a chase;
+  // it carries on from where it was when it comes back.
+  jazz(on) {
+    const c = this.context; if (!c || !this.nodes || c.state !== 'running') return;
+    if (on && !this.jazzSrc) {
+      const names = Object.keys(this.recorded || {}).filter((k) => /^jazz(-\d+)?$/.test(k)).sort(); if (!names.length) return;
+      this.jazzN = ((this.jazzN ?? Math.floor(Math.random() * names.length)) + 1) % names.length;
+      if (!this.jazzGain) { this.jazzGain = c.createGain(); this.jazzGain.gain.value = 0; this.jazzGain.connect(this.nodes.master); }
+      const src = c.createBufferSource(); src.buffer = this.recorded[names[this.jazzN]]; src.connect(this.jazzGain); src.start(); this.jazzSrc = src;
+      src.onended = () => { src.disconnect(); if (this.jazzSrc === src) this.jazzSrc = null; };   // the next call starts the other track
+    }
+    if (on !== !!this.jazzOn && this.jazzGain) { this.jazzOn = on; this.jazzGain.gain.setTargetAtTime(on ? 1.1 : 0, c.currentTime, on ? .9 : .4); this.ambience(); }
+  }
+  // Chase music: loops, loud, from the moment a guard spots you; fades out once you have been clear for a while.
+  tension(on) {
+    const c = this.context; if (!c || !this.nodes || c.state !== 'running') return;
+    if (!this.tense) {
+      const buffer = this.take('tension'); if (!buffer || !on) return;
+      const src = c.createBufferSource(), g = c.createGain();
+      src.buffer = buffer; src.loop = true; src.loopStart = .05; src.loopEnd = buffer.duration - .05; g.gain.value = 0;
+      src.connect(g).connect(this.nodes.master); src.start(); this.tense = g;
+    }
+    if (on !== this.tenseOn) { this.tenseOn = on; this.tense.gain.setTargetAtTime(on ? 6 : 0, c.currentTime, on ? .12 : 1.1); }
+  }
   tone(hz, end, life, wave = 'sine', volume = .30, cutoff = 2600, delay = 0) {
     if (!this.context || this.muted || !this.active || this.context.state !== 'running') return;
     const c = this.context,
@@ -96,7 +143,8 @@ export class GameAudio extends InkAudio {
     if (this.play(name, ['screech', 'tear'].includes(name) ? .4 + .6 * amount : 1)) return;
     switch (name) {
       case 'ui-hover': this.tone(2400, 2000, .025, 'square', .08, 6000); break;
-      case 'ui-press': this.tone(1800, 1400, .03, 'square', .1, 5000); break;
+      case 'ui-press': case 'select': case 'select-major': this.tone(1800, 1400, .03, 'square', .1, 5000); break;
+      case 'points': this.tone(660, 990, .16, 'sine', .22, 3000); break;
       case 'slide': this.noise(.25, 900, .22, 'lowpass'); break;
       case 'clink': this.tone(1900, 1500, .12, 'sine', .18, 5000); this.tone(2600, 2300, .09, 'sine', .1, 6000, .03); break;
       case 'screech': this.tone(700 + amount * 500, 600 + amount * 450, .09, 'sawtooth', .07, 2400); this.noise(.08, 3000, .06); break;
@@ -161,7 +209,8 @@ export class GameAudio extends InkAudio {
         this.tone(650, 127, .09, 'triangle', .35, 900, .075);
         break;
       case 'step':
-        this.tone(90, 40, .11, 'triangle', .20, 220);
+        // A soft unpitched scuff: a pitched tone here reads as a beep on every step.
+        this.noise(.08, 180 + Math.random() * 90, .16, 'lowpass', .7);
         break;
       case 'guard':
         this.tone(137, 51, .18, 'triangle', .50, 270);

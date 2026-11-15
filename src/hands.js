@@ -3,6 +3,7 @@
 // x 0..560 right, y 0..320 down (millimetres), z = metres toward the viewer. Table puzzles lie flat
 // (board normal up); wall puzzles stand upright facing the camera.
 import * as THREE from 'three';
+import { cracks } from './paper.js';
 const W = 560, H = 320, S = .001, TAU = Math.PI * 2;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const TABLE = new Set(['pile', 'rubbing', 'torn', 'torch', 'watch', 'align', 'tickets']), HIGH = new Set(['drawer', 'press', 'slot', 'shred']);
@@ -27,11 +28,15 @@ function labelCanvas(text, w, h, { bg = '#e9dfc5', fg = '#2b2620', font = '700 1
 
 export function createHands({ scene, camera, canvas, sfx = () => {} }) {
   let cur = null, drag = null;
-  const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), plane = new THREE.Plane(), v1 = new THREE.Vector3(), v2 = new THREE.Vector3();
+  const OVER = 1;   // the layer the renderer draws over the room (see setOverlay in renderer.js)
+  const ray = new THREE.Raycaster(); ray.layers.enableAll();
+  const ndc = new THREE.Vector2(), plane = new THREE.Plane(), v1 = new THREE.Vector3(), v2 = new THREE.Vector3();
 
   // Where the rig and the camera go for a puzzle at world point `at`, approached from `eye`.
   function pose(kind, at, eye, close = 1) {
     const n = new THREE.Vector3(eye.x - at.x, 0, eye.z - at.z); if (n.lengthSq() < 1e-4) n.set(0, 0, 1); n.normalize();
+    // Reading: the camera stays where you stand and the paper comes up between you and the prop, so it never flies into furniture.
+    if (kind === 'read') { const pos = eye.clone().addScaledVector(n, -.45 * close); pos.y = eye.y - .05; return { pos, n, cam: eye.clone(), look: pos.clone(), table: false }; }
     const table = TABLE.has(kind), pos = at.clone().addScaledVector(n, table ? .05 : .14);
     if (table) pos.y = at.y + .06; else if (HIGH.has(kind)) pos.y = at.y + .12; // lifts the shelf under the puzzle clear of the real furniture
     const cam = pos.clone().addScaledVector(n, (table ? .2 : HIGH.has(kind) ? .42 : .44) * close); cam.y += (table ? .4 : HIGH.has(kind) ? .22 : .02) * close;
@@ -107,23 +112,40 @@ export function createHands({ scene, camera, canvas, sfx = () => {} }) {
   function onDown(e) {
     if (!cur || e.target !== canvas || e.button > 0) return;
     e.preventDefault(); e.stopPropagation();
-    boardPoint(e);
-    for (const hit of ray.intersectObject(cur.g, true)) {
-      let o = hit.object; while (o && !o.userData.grab) o = o.parent;
-      if (!o || o.visible === false) continue;
-      const z = cur.g.worldToLocal(hit.point.clone()).z;
-      drag = { h: o.userData.grab, z, id: e.pointerId };
-      drag.h.down?.(boardPoint(e, z), o); return;
+    // A hand is less exact than a mouse: if it closes just beside something, it takes hold of the nearest thing in reach.
+    const reach = e.pointerId === 'hand' ? canvas.getBoundingClientRect().height : 0, tries = [[0, 0]];
+    if (reach) for (const k of [.03, .06]) for (let a = 0; a < 8; a++) tries.push([Math.cos(a * Math.PI / 4) * k * reach, Math.sin(a * Math.PI / 4) * k * reach]);
+    for (const [dx, dy] of tries) {
+      boardPoint({ clientX: e.clientX + dx, clientY: e.clientY + dy });
+      for (const hit of ray.intersectObject(cur.g, true)) {
+        let o = hit.object; while (o && !o.userData.grab) o = o.parent;
+        if (!o || o.visible === false) continue;
+        const z = cur.g.worldToLocal(hit.point.clone()).z;
+        const p = boardPoint(e, z);
+        drag = { h: o.userData.grab, z, id: e.pointerId, from: p, last: p, mode: '', roll: 0 };
+        drag.h.down?.(p, o); return;
+      }
     }
   }
   function onMove(e) {
     if (!cur) return;
     if (cur.hover && (drag || e.target === canvas)) cur.hover(boardPoint(e, 0));
-    if (drag && e.pointerId === drag.id) drag.h.move?.(boardPoint(e, drag.z));
+    if (!drag || e.pointerId !== drag.id) return;
+    const p = boardPoint(e, drag.z);
+    if (drag.h.turn && drag.id === 'hand') {
+      // A hand (or a controller's pointer) turns a dial or a lock wheel by sliding or by turning at the wrist, whichever
+      // it starts doing: never both at once, so a wrist that tilts during a drag cannot undo it, and never by circling
+      // round the knob, which a hand in the air cannot hold. Nothing moves until it is clear which one is meant.
+      if (!drag.mode && Math.hypot(p.x - drag.from.x, p.y - drag.from.y) > 16) { drag.mode = 'move'; drag.last = p; }
+      if (drag.mode !== 'move') return;
+      if (drag.h.slide) { drag.h.turn((p.x - drag.last.x) / 48); drag.last = p; return; }   // sideways: 48 board units to a radian
+    }
+    drag.h.move?.(p);
   }
   function onUp(e) { if (!cur || !drag || e.pointerId !== drag.id) return; const d = drag; drag = null; d.h.up?.(boardPoint(e, d.z)); }
 
   function update(dt) {
+    cur?.g.traverse((o) => o.layers.set(OVER));   // every part of the puzzle, including ones made mid-puzzle
     if (!cur) return;
     dt = Math.min(dt, .1);
     for (const f of cur.ticks.slice()) f(dt);
@@ -142,11 +164,67 @@ export function createHands({ scene, camera, canvas, sfx = () => {} }) {
     const e = { clientX: x, clientY: y, pointerId: spatial ? 'hand' : 'mouse', target: canvas, button: 0, preventDefault() {}, stopPropagation() {} };
     (type === 'down' ? onDown : type === 'up' ? onUp : onMove)(e);
   }
-  // World position under a screen point on the puzzle's working plane (for the hand cursor).
-  function worldAt(x, y) { if (!cur) return null; const b = boardPoint({ clientX: x, clientY: y }); return cur.g.localToWorld(new THREE.Vector3((b.x - W / 2) * S, (H / 2 - b.y) * S, .02)); }
+  // ── The player's own hands, built from the tracked landmarks so they move exactly as the real ones do. ──
+  // Seen from behind, like your own hand reaching in: the mirrored picture gives left/right and up/down, the world
+  // landmarks give the curl of the fingers toward the surface. Over a puzzle the hand hovers above the board;
+  // in the open room it floats in front of the camera.
+  const LIMB = .058, HOVER = .075, AHEAD = .8, limbs = [], joint = Array.from({ length: 21 }, () => new THREE.Vector3()), yUp = new THREE.Vector3(0, 1, 0);
+  // White cartoon gloves: fat rounded fingers that touch, a puffy palm and a rolled cuff at the wrist.
+  const BONES = [[1, 2, .17], [2, 3, .155], [3, 4, .145], [5, 6, .135], [6, 7, .125], [7, 8, .115], [9, 10, .14], [10, 11, .13], [11, 12, .12], [13, 14, .13], [14, 15, .12], [15, 16, .11], [17, 18, .12], [18, 19, .11], [19, 20, .1],
+    [0, 1, .21], [0, 5, .24], [0, 9, .25], [0, 13, .24], [0, 17, .22], [5, 9, .2], [9, 13, .2], [13, 17, .19]];   // [from, to, radius in palm lengths]
+  const KNUCKLE = [.27, .21, .17, .155, .145, .2, .135, .125, .115, .21, .14, .13, .12, .2, .13, .12, .11, .18, .12, .11, .1];   // joint radius, wrist first
+  const palmX = new THREE.Vector3(), palmY = new THREE.Vector3(), palmZ = new THREE.Vector3(), palmM = new THREE.Matrix4(), zAxis = new THREE.Vector3(0, 0, 1);
+  function makeLimb() {
+    const g = new THREE.Group(), mat = new THREE.MeshLambertMaterial({ color: '#f6f6f4' }), ball = new THREE.SphereGeometry(1, 18, 12), tube = new THREE.CylinderGeometry(1, 1, 1, 16);
+    g.matrixAutoUpdate = false; g.visible = false; scene.add(g);
+    const balls = joint.map(() => g.add(new THREE.Mesh(ball, mat)).children.at(-1)), tubes = BONES.map(() => g.add(new THREE.Mesh(tube, mat)).children.at(-1));
+    const palm = g.add(new THREE.Mesh(ball, mat)).children.at(-1), plug = g.add(new THREE.Mesh(ball, mat)).children.at(-1), cuff = g.add(new THREE.Mesh(new THREE.TorusGeometry(1, .36, 12, 28), mat)).children.at(-1);
+    g.children.forEach((o) => { o.renderOrder = 11; });   // after a page held up to read (drawn over the room), so the hands stay in front of it
+    return { g, balls, tubes, palm, plug, cuff };
+  }
+  // Draws tracked hand `h` (one of the gesture frame's hands) in slot i, reaching for screen point (x, y). h = null hides it.
+  function limb(i, h, x, y) {
+    const m = limbs[i] ||= makeLimb();
+    if (!h) { m.g.visible = false; return; }
+    const layer = cur ? OVER : 0; if (m.layer !== layer) { m.layer = layer; m.g.traverse((o) => o.layers.set(layer)); }   // over a puzzle the gloves are drawn with it
+    if (h.stale) return;                       // a dropped camera frame: hold the last pose
+    let ax, ay, az;
+    if (cur) {
+      const b = boardPoint({ clientX: x, clientY: y }, HOVER); if (b.x === -999) { m.g.visible = false; return; }
+      ax = (b.x - W / 2) * S; ay = (H / 2 - b.y) * S; az = HOVER; m.g.matrix.copy(cur.g.matrixWorld);
+    } else {
+      const r = canvas.getBoundingClientRect(), far = .42, half = Math.tan(camera.fov * Math.PI / 360) * far;
+      ax = ((x - r.left) / r.width * 2 - 1) * half * camera.aspect; ay = -((y - r.top) / r.height * 2 - 1) * half; az = -far;
+      camera.updateMatrixWorld(); m.g.matrix.copy(camera.matrixWorld);
+    }
+    // The reach point sits ahead of the palm, among the fingers, so the thing being grabbed is not hidden under the hand.
+    const s = LIMB / Math.max(1e-4, h.palm), w = h.w, zc = w ? (w[0].z + w[5].z + w[17].z) / 3 : 0, zs = w ? LIMB / Math.max(1e-4, Math.hypot(w[9].x - w[0].x, w[9].y - w[0].y, w[9].z - w[0].z)) : 0;
+    for (let k = 0; k < 21; k++) joint[k].set(ax + (h.lm[k].x - h.at.x) * h.aspect * s, ay - AHEAD * LIMB - (h.lm[k].y - h.at.y) * s, az + (w ? (w[k].z - zc) * zs : 0));
+    m.balls.forEach((o, k) => { o.position.copy(joint[k]); o.scale.setScalar(LIMB * KNUCKLE[k]); });
+    m.tubes.forEach((o, k) => {
+      const [a, b, rad] = BONES[k], d = v1.subVectors(joint[b], joint[a]), len = d.length();
+      o.position.copy(joint[a]).addScaledVector(d, .5); o.scale.set(LIMB * rad, Math.max(1e-5, len), LIMB * rad);
+      if (len > 1e-6) o.quaternion.setFromUnitVectors(yUp, d.divideScalar(len));
+    });
+    // The back of the hand is one smooth pad, and the cuff rolls round the wrist, square to the forearm.
+    palmY.subVectors(joint[9], joint[0]).normalize(); palmX.subVectors(joint[5], joint[17]); palmZ.crossVectors(palmX, palmY).normalize(); palmX.crossVectors(palmY, palmZ);
+    m.palm.position.copy(joint[0]).add(joint[9]).add(joint[5]).add(joint[17]).multiplyScalar(.25); m.palm.quaternion.setFromRotationMatrix(palmM.makeBasis(palmX, palmY, palmZ)); m.palm.scale.set(LIMB * .47, LIMB * .56, LIMB * .27);
+    m.cuff.position.copy(joint[0]).addScaledVector(palmY, -LIMB * .16); m.cuff.quaternion.setFromUnitVectors(zAxis, palmY); m.cuff.scale.setScalar(LIMB * .29);
+    m.plug.position.copy(m.cuff.position); m.plug.quaternion.copy(m.cuff.quaternion); m.plug.scale.set(LIMB * .23, LIMB * .23, LIMB * .09);   // a flat disc that fills the cuff, so the glove is not hollow from behind
+    m.g.matrixWorldNeedsUpdate = true; m.g.visible = true;
+  }
   // Two-hand twist and stretch, for puzzles that accept it (reading a paper).
   function twist(dAngle, dScale) { cur?.spec.twist?.(dAngle, dScale); }
-  return { pose, open, close, update, pointer, worldAt, twist, get active() { return !!cur; }, get group() { return cur?.g; }, get holdProgress() { return cur ? cur.holdP : 0; }, setHeld(v) { if (cur) cur.held = v; } };
+  // The hand holding something has turned at the wrist: dials and lock wheels turn with it.
+  function turn(dAngle) {
+    if (!cur || !drag || cur.finished || !drag.h.turn || drag.mode === 'move') return;
+    drag.roll += dAngle;
+    if (!drag.mode) { if (Math.abs(drag.roll) < .3) return; drag.mode = 'turn'; dAngle = drag.roll; }   // about 9 degrees of wrist before it counts
+    drag.h.turn(dAngle);
+  }
+  // Viewport fraction of a board point (the tests aim scripted hands with it).
+  function screenAt(bx, by) { if (!cur) return null; cur.g.updateMatrixWorld(); const v = cur.g.localToWorld(new THREE.Vector3((bx - W / 2) * S, (H / 2 - by) * S, 0)).project(camera); return [(v.x + 1) / 2, (1 - v.y) / 2]; }
+  return { pose, open, close, update, pointer, limb, twist, turn, screenAt, get limbs() { return limbs.map((m) => m.g.visible); }, get kind() { return cur?.kind; }, get active() { return !!cur; }, get group() { return cur?.g; }, get holdProgress() { return cur ? cur.holdP : 0; }, setHeld(v) { if (cur) cur.held = v; } };
 }
 
 // ─────────────── The puzzles ───────────────
@@ -183,15 +261,16 @@ const KINDS = {
     ids.forEach((id, i) => {
       const [build, hx, hy, snd] = ITEMS[id], big = i < 2;
       const j = { id, hx, hy, snd, x: big ? 250 + Math.random() * 60 : 180 + Math.random() * 200, y: big ? 130 + Math.random() * 60 : 90 + Math.random() * 150, zr: .003 + i * .006, n: r.node(0, 0) };
-      build(j.n); j.n.rotation.z = (Math.random() * 50 - 25) * Math.PI / 180; place(j, j.zr); junk.push(j);
+      build(j.n); B(j.n, 0, 0, hx * 2, hy * 2, .004, '#000000').visible = false;   // an unseen plate: thin pieces are mostly holes, and a press in a hole took the paper underneath
+      j.n.rotation.z = (Math.random() * 50 - 25) * Math.PI / 180; place(j, j.zr); junk.push(j);
       let off;
       r.grab(j.n, {
-        down: (p) => { off = { x: p.x - j.x, y: p.y - j.y }; place(j, .05); r.sfx('slide'); },
+        down: (p) => { off = { x: p.x - j.x, y: p.y - j.y }; place(j, .05); r.sfx('select'); },
         move: (p) => { j.x = clamp(p.x - off.x, -80, W + 80); j.y = clamp(p.y - off.y, -50, H + 50); place(j, .05); },
         up: () => { const c = clear(j); c ? cleared.add(id) : cleared.delete(id); place(j, c ? .001 : j.zr); r.sfx(j.snd); check(); },
       });
     });
-    const take = () => { if (!ready || taken) return; taken = true; r.sfx('slide'); r.anim(.8, (k) => { paper.position.z = .0015 + k * .3; paper.position.y = (H / 2 - 165) * S - k * .1; paper.rotation.x = k * .95; }); r.finish(); };
+    const take = () => { if (!ready || taken) return; taken = true; r.sfx('select-major'); r.anim(.8, (k) => { paper.position.z = .0015 + k * .3; paper.position.y = (H / 2 - 165) * S - k * .1; paper.rotation.x = k * .95; }); r.finish(); };
     r.grab(paper, { down: take });
     return { hint: 'Drag the clutter off the paper, then pick the paper up.', vet: [['Clear clutter', () => { const j = junk.find((q) => !cleared.has(q.id)); if (!j) return; const i = cleared.size; j.x = i % 2 ? 540 : 20; j.y = 40 + Math.floor(i / 2) * 110; j.n.rotation.z = 0; place(j, .001); cleared.add(j.id); r.sfx('slide'); check(); }], ['Pick up the paper', take]] };
   },
@@ -265,7 +344,8 @@ const KINDS = {
     const turn = (i) => { wheels[i].rotation.x = (d[i] + .5) / 10 * TAU; };
     [0, 1, 2].forEach(turn);
     const step = (i, s) => { if (r.finished) return; d[i] = (d[i] + s + 10) % 10; turn(i); r.sfx('thud'); if (d.every((v, k) => v === code[k])) { r.sfx('kachunk'); r.say('The shackle springs.'); r.anim(.5, (k) => { shackle.position.y = (H / 2 - 84) * S + k * .04; shackle.rotation.y = k * .5; }); r.finish({ ok: true }); } };
-    wheels.forEach((n, i) => { let y0 = 0; r.grab(n, { down: (p) => { y0 = p.y; }, move: (p) => { while (p.y - y0 > 26) { y0 += 26; step(i, -1); } while (y0 - p.y > 26) { y0 -= 26; step(i, 1); } } }); });
+    wheels.forEach((n, i) => { let y0 = 0, roll = 0; r.grab(n, { down: (p) => { y0 = p.y; roll = 0; }, move: (p) => { while (p.y - y0 > 26) { y0 += 26; step(i, -1); } while (y0 - p.y > 26) { y0 -= 26; step(i, 1); } },
+      turn: (a) => { roll += a; while (roll > .4) { roll -= .4; step(i, 1); } while (roll < -.4) { roll += .4; step(i, -1); } } }); });   // a wrist turn of about 23 degrees is one digit
     return { hint: 'Drag each brass wheel up or down to set the number.', vet: [0, 1, 2].flatMap((i) => [[`Wheel ${i + 1} ▲`, () => step(i, 1)], [`Wheel ${i + 1} ▼`, () => step(i, -1)]]), destroy() { tex.dispose(); side.dispose(); } };
   },
 
@@ -289,7 +369,7 @@ const KINDS = {
       }
     };
     r.tick((dt) => { for (const s of shards) { const v = s.userData.v; v[1] -= 3.2 * dt; s.position.x += v[0] * dt; s.position.y += v[1] * dt; s.position.z += v[2] * dt * .3; s.rotation.z += dt * 6; s.rotation.x += dt * 4; if (s.position.y < -.5) s.visible = false; } });
-    const take = () => { if (hits < 6 || r.finished) return; r.sfx('clink'); r.anim(.7, (k) => { key.position.z = .012 + k * .3; key.rotation.z = k * .6; }); r.finish(); };
+    const take = () => { if (hits < 6 || r.finished) return; r.sfx('select-major'); r.anim(.7, (k) => { key.position.z = .012 + k * .3; key.rotation.z = k * .6; }); r.finish(); };
     r.grab(glass, { down: (p) => hit(p.x, p.y) }); r.grab(key, { down: take });
     let next = 0;
     return { hint: 'Strike the glass until it breaks, then take the key.', hold: { label: 'Hold to smash', tick: (p) => { if (p >= next) { next += 1 / 6; hit(200 + Math.random() * 160, 80 + Math.random() * 160); } }, done: () => { while (hits < 6) hit(280, 160); r.later(take, .5); } }, destroy() { crackMat.dispose(); } };
@@ -313,6 +393,14 @@ const KINDS = {
       b.font = '17px Georgia, serif'; ['I agree to donate one kidney', 'voluntarily and without payment.', '', 'Signed:'].forEach((l, i) => b.fillText(l, 40, 100 + i * 32));
       b.strokeStyle = '#1c2246'; b.lineWidth = 2; b.beginPath(); b.moveTo(130, 196); b.bezierCurveTo(170, 170, 200, 220, 260, 190); b.stroke();
       h.fillStyle = '#c99bff'; h.shadowColor = '#b46bff'; h.shadowBlur = 16; h.font = 'italic bold 34px Georgia, serif'; (reveal.lines || ['I do not consent']).forEach((l, i) => h.fillText(l, 60, 260 + i * 40));
+    } else if (surface === 'glass') {
+      // Cracked one-way glass; the UV lamp brings up tally marks and words scratched into it, in cyan.
+      const g = b.createLinearGradient(0, 0, W, H); g.addColorStop(0, '#34444a'); g.addColorStop(1, '#141c20'); b.fillStyle = g; b.fillRect(0, 0, W, H);
+      cracks(b, [[W * .3, H * .44], [W * .74, H * .58]], 190);
+      h.strokeStyle = h.fillStyle = '#8ff4ff'; h.shadowColor = '#35d6ff'; h.shadowBlur = 16; h.lineWidth = 3; h.lineCap = 'round';
+      for (let i = 0; i < 19; i++) { const x = 44 + i * 14 + Math.floor(i / 5) * 16, y = 34 + (i % 3) * 2; h.beginPath(); if (i % 5 === 4) { h.moveTo(x - 62, y + 34); h.lineTo(x - 8, y + 6); } else { h.moveTo(x, y); h.lineTo(x + 2, y + 40); } h.stroke(); }
+      h.font = 'bold 32px "Courier New", monospace';
+      (reveal.lines || []).forEach((l, i) => { h.save(); h.translate(i % 2 ? 250 : 50, 150 + i * 58); h.rotate(i % 2 ? .05 : -.06); h.fillText(l, 0, 0); h.restore(); });
     } else {
       const g = b.createLinearGradient(0, 0, W, H); g.addColorStop(0, '#6f7c6c'); g.addColorStop(1, '#55604f'); b.fillStyle = g; b.fillRect(0, 0, W, H);
       for (let i = 0; i < 160; i++) { b.strokeStyle = `rgba(255,255,255,${Math.random() * .05})`; b.beginPath(); const y = Math.random() * H; b.moveTo(0, y); b.lineTo(W, y + Math.random() * 20 - 10); b.stroke(); }
@@ -356,7 +444,7 @@ const KINDS = {
     };
     const add = (da) => { if (r.finished || da <= 0) return; turned += da; angle += da; while (turned - lastTick > Math.PI / 30) { lastTick += Math.PI / 30; r.sfx('tick'); } paint(); if (turned >= TAU) { r.say('The hours slip by.'); r.sfx('kachunk'); r.finish(); } };
     paint();
-    r.grab(grip, { down: (p) => { prev = Math.atan2(p.y - 160, p.x - 280); }, move: (p) => { const a = Math.atan2(p.y - 160, p.x - 280); let d = a - prev; if (d > Math.PI) d -= TAU; if (d < -Math.PI) d += TAU; prev = a; add(d); } });
+    r.grab(grip, { down: (p) => { prev = Math.atan2(p.y - 160, p.x - 280); }, move: (p) => { const a = Math.atan2(p.y - 160, p.x - 280); let d = a - prev; if (d > Math.PI) d -= TAU; if (d < -Math.PI) d += TAU; prev = a; add(d); }, turn: (d) => add(d), slide: true });
     return { hint: 'Drag the red tip of the minute hand clockwise, once round the dial.', hold: { label: 'Hold to wind', tick: (p, dt) => add(dt * Math.PI), done: () => add(TAU - turned + .01) }, destroy() { ftex.dispose(); fmat.dispose(); } };
   },
 
@@ -373,7 +461,8 @@ const KINDS = {
     const paint = () => { kf.rotation.z = -(-135 + (f - min) / (max - min) * 270) * Math.PI / 180; ks.rotation.z = -(-135 + sq / 100 * 270) * Math.PI / 180; rc.fillStyle = '#121310'; rc.fillRect(0, 0, 160, 30); rc.fillStyle = '#f3d38a'; rc.font = '700 20px Rockwell, Georgia, serif'; rc.textAlign = 'center'; rc.fillText(`${f.toFixed(0)} kHz · ${sq.toFixed(0)}%`, 80, 22); read.redraw(); };
     const mis = () => clamp(Math.abs(f - target) / 40, 0, 1) * .65 + clamp(Math.abs(sq - sqT) / 40, 0, 1) * .35;
     paint();
-    [[kf, 120, 'f'], [ks, 440, 's']].forEach(([n, cx, id]) => { let prev = 0; r.grab(n, { down: (p) => { prev = Math.atan2(p.y - 242, p.x - cx); }, move: (p) => { const a = Math.atan2(p.y - 242, p.x - cx); let d = a - prev; if (d > Math.PI) d -= TAU; if (d < -Math.PI) d += TAU; prev = a; const deg = d * 180 / Math.PI; if (id === 'f') f = clamp(f + deg * .45, min, max); else sq = clamp(sq + deg * .3, 0, 100); paint(); r.sfx('click'); } }); });
+    [[kf, 120, 'f'], [ks, 440, 's']].forEach(([n, cx, id]) => { let prev = 0; const spin = (d) => { const deg = d * 180 / Math.PI; if (id === 'f') f = clamp(f + deg * .45, min, max); else sq = clamp(sq + deg * .3, 0, 100); paint(); r.sfx('click'); };
+      r.grab(n, { down: (p) => { prev = Math.atan2(p.y - 242, p.x - cx); }, move: (p) => { const a = Math.atan2(p.y - 242, p.x - cx); let d = a - prev; if (d > Math.PI) d -= TAU; if (d < -Math.PI) d += TAU; prev = a; spin(d); }, turn: spin, slide: true }); });
     r.tick((dt) => {
       time += dt; const m = r.finished ? 0 : mis();
       c.fillStyle = '#04120a'; c.fillRect(0, 0, 240, 130); c.strokeStyle = '#123d22'; c.lineWidth = 1;
@@ -510,19 +599,25 @@ const KINDS = {
     const polys = [[[X - 4, Y - 4], ...vT, ...rev(hL)], [...vT, ...hR, [X + DW + 4, Y - 4]], [...hL, ...vB, [X - 4, Y + DH + 4]], [...hR, [X + DW + 4, Y + DH + 4], ...rev(vB)]];
     const tex = new THREE.CanvasTexture(docCanvas(doc, DW, DH)); tex.colorSpace = THREE.SRGBColorSpace; const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide });
     const home = [[X + DW / 4, Y + DH / 4], [X + DW * .75, Y + DH / 4], [X + DW / 4, Y + DH * .75], [X + DW * .75, Y + DH * .75]];
-    const start = [[40, 50], [520, 40], [30, 270], [530, 265]].sort(() => Math.random() - .5), placed = new Set(), scraps = [];
+    // A faint outline of the whole page with its tear lines, so it is plain where each piece belongs.
+    { const [gcv, g] = canvasOf(DW, DH, 2), path = (pts) => { g.beginPath(); pts.forEach(([px, py], k) => k ? g.lineTo(px - X, py - Y) : g.moveTo(px - X, py - Y)); g.stroke(); };
+      g.fillStyle = 'rgba(236,225,196,.14)'; g.fillRect(0, 0, DW, DH); g.strokeStyle = 'rgba(236,225,196,.55)'; g.lineWidth = 1.5; g.setLineDash([6, 5]);
+      g.strokeRect(1, 1, DW - 2, DH - 2); [vT, vB, hL, hR].forEach(path); r.sheet(X + DW / 2, Y + DH / 2, DW, DH, gcv, .0009, null, true); }
+    const start = [[75, 75], [485, 75], [75, 245], [485, 245]].sort(() => Math.random() - .5), placed = new Set(), scraps = [], NEAR = 58;
     polys.forEach((pts, i) => {
       const geo = new THREE.ShapeGeometry(new THREE.Shape(pts.map(([px, py]) => new THREE.Vector2((px - X) * S, -(py - Y) * S))));
       const uv = geo.attributes.uv; for (let k = 0; k < uv.count; k++) uv.setXY(k, uv.getX(k) / (DW * S), 1 + uv.getY(k) / (DH * S));
       geo.translate(-(home[i][0] - X) * S, (home[i][1] - Y) * S, 0);
-      const sc = { x: start[i][0], y: start[i][1], rot: (Math.random() * 60 - 30) * Math.PI / 180, n: r.node(0, 0) }; sc.n.add(new THREE.Mesh(geo, mat)); scraps.push(sc);
+      const sc = { x: start[i][0], y: start[i][1], rot: (Math.random() * 24 - 12) * Math.PI / 180, n: r.node(0, 0) }; sc.n.add(new THREE.Mesh(geo, mat)); scraps.push(sc);
       const put = (z = .002 + i * .0006) => { sc.n.position.set((sc.x - W / 2) * S, (H / 2 - sc.y) * S, z); sc.n.rotation.z = sc.rot; };
       sc.put = put; put();
       sc.snap = () => { if (placed.has(i)) return; placed.add(i); const x0 = sc.x, y0 = sc.y, r0 = sc.rot; r.sfx('thud'); r.anim(.25, (k) => { sc.x = x0 + (home[i][0] - x0) * k; sc.y = y0 + (home[i][1] - y0) * k; sc.rot = r0 * (1 - k); put(.0012); }); if (placed.size === 4) { r.say(doc.lines?.length ? `It reads: ${doc.lines.join(', ')}.` : 'Whole again.'); r.finish(); } };
       let off = null;
-      r.grab(sc.n, { down: (p) => { if (placed.has(i)) return; off = { x: p.x - sc.x, y: p.y - sc.y }; r.sfx('slide'); }, move: (p) => { if (!off) return; sc.x = p.x - off.x; sc.y = p.y - off.y; sc.rot *= .9; put(.03); }, up: () => { if (!off) return; off = null; put(); if (Math.hypot(sc.x - home[i][0], sc.y - home[i][1]) < 32) sc.snap(); } });
+      const near = () => Math.hypot(sc.x - home[i][0], sc.y - home[i][1]) < NEAR;
+      // A piece straightens as soon as it is picked up and pulls itself in once it is near its place, even mid-drag.
+      r.grab(sc.n, { down: (p) => { if (placed.has(i)) return; off = { x: p.x - sc.x, y: p.y - sc.y }; sc.rot = 0; put(.03); r.sfx('slide'); }, move: (p) => { if (!off) return; sc.x = p.x - off.x; sc.y = p.y - off.y; put(.03); if (near()) { off = null; sc.snap(); } }, up: () => { if (!off) return; off = null; put(); if (near()) sc.snap(); } });
     });
-    return { hint: 'Slide the torn pieces back together. Each one clicks into place when it’s close.', vet: [['Fit the next piece', () => scraps.find((s, i) => !placed.has(i))?.snap()]], destroy() { tex.dispose(); mat.dispose(); } };
+    return { hint: 'Drag each torn piece onto the dotted outline. It clicks into place when it’s close.', vet: [['Fit the next piece', () => scraps.find((s, i) => !placed.has(i))?.snap()]], destroy() { tex.dispose(); mat.dispose(); } };
   },
 
   // 15 ── Torch search: sweep the beam through the dark until something glints, then pick it up.
@@ -547,7 +642,7 @@ const KINDS = {
     });
     const lamp = r.node(280, 160, .1); r.cyl(0, 0, 14, .1, BLACK, 0, lamp); r.cyl(0, 0, 19, .02, '#3b3b40', -.02, lamp);
     r.hover = (p) => { bx = p.x; by = p.y; lamp.position.set((p.x - W / 2) * S + .05, (H / 2 - p.y) * S - .05, .1); };
-    const grab = () => { if (got) return; got = true; r.sfx('clink'); r.say('The closet key.'); glint.visible = false; r.anim(.5, (k) => { dark.material.opacity = 1 - k; }); r.anim(.8, (k) => { key.position.z = .004 + k * .3; key.rotation.z = .5 + k; }); r.finish(); };
+    const grab = () => { if (got) return; got = true; r.sfx('select-major'); r.say('The closet key.'); glint.visible = false; r.anim(.5, (k) => { dark.material.opacity = 1 - k; }); r.anim(.8, (k) => { key.position.z = .004 + k * .3; key.rotation.z = .5 + k; }); r.finish(); };
     r.grab(dark, { down: (p) => { bx = p.x; by = p.y; if (Math.hypot(p.x - tx, p.y - ty) < 36) grab(); else r.sfx('click'); }, move: (p) => r.hover(p) });
     return { hint: 'Move the torch through the dark. Pick up whatever glints.', hold: { label: 'Hold to search', tick: () => { bx += (tx - bx) * .08; by += (ty - by) * .08; }, done: grab } };
   },
@@ -611,6 +706,7 @@ const KINDS = {
     x.fillRect(18, y - 12, w - 36, 1.5); y += 14;
     x.fillStyle = '#23305f'; x.font = '15px "American Typewriter", "Courier New", monospace'; for (const l of wrap(x, r.opts.body || '', w - 36)) { x.fillText(l, 18, y); y += 21; }
     const page = r.sheet(280, 160, w, h, cv, 0); let put = false;
+    page.material.depthFunc = THREE.AlwaysDepth; page.renderOrder = 10;   // drawn over a shelf or wall the player stands close to, and still written to depth so the ink pass treats it as solid
     r.anim(.55, (k) => { page.position.z = -.25 + k * .25; page.position.y = -.12 * (1 - k); page.scale.setScalar(.35 + k * .65); page.rotation.x = -(1 - k) * 1.1; });
     const back = () => { if (put) return; put = true; r.sfx('slide'); r.anim(.35, (k) => { page.position.z = -k * .25; page.position.y = -.12 * k; page.scale.setScalar(1 - k * .65); page.rotation.x = -k * 1.1; }, () => r.finish(null, 0)); };
     r.grab(page, { down: back });

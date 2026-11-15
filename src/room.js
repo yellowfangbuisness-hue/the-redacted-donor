@@ -166,6 +166,26 @@ export class InkTextureFactory {
     this.cache.set(id,texture);
     return texture;
   }
+  // A normal map worked out from a painted texture: darker paint is taken as lower (the gaps between boards, the
+  // shadow line of a moulding, the grain), and the slope of that height is the normal. Half the texture's size is plenty.
+  relief(texture, depth=2.4) {
+    const src=texture.image, s=Math.min(1,1024/Math.max(src.width,src.height)), w=Math.round(src.width*s), h=Math.round(src.height*s);
+    const cv=document.createElement('canvas');cv.width=w;cv.height=h;
+    const c=cv.getContext('2d',{willReadFrequently:true});c.drawImage(src,0,0,w,h);
+    const img=c.getImageData(0,0,w,h), d=img.data, H=new Float32Array(w*h);
+    for(let i=0;i<w*h;i++)H[i]=(d[i*4]*.3+d[i*4+1]*.59+d[i*4+2]*.11)/255;
+    const at=(x,y)=>H[((y+h)%h)*w+(x+w)%w];   // wraps, as the textures tile
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+      // Canvas rows run downward and the texture is flipped on upload, so a rise toward the next row is a rise toward -v.
+      const nx=-(at(x+1,y)-at(x-1,y))*depth, ny=(at(x,y+1)-at(x,y-1))*depth, k=1/Math.hypot(nx,ny,1), i=(y*w+x)*4;
+      d[i]=(nx*k*.5+.5)*255;d[i+1]=(ny*k*.5+.5)*255;d[i+2]=(k*.5+.5)*255;d[i+3]=255;
+    }
+    c.putImageData(img,0,0);
+    const map=new THREE.CanvasTexture(cv);
+    map.name=texture.name+'-normal';map.wrapS=texture.wrapS;map.wrapT=texture.wrapT;map.repeat.copy(texture.repeat);map.anisotropy=4;map.needsUpdate=true;
+    this.textures.add(map);
+    return map;
+  }
   wood(id='wood', lampPool=false) {
     const floor=id==='floor';
     return this.make(id,1024,floor?1024:512,(c,w,h,r)=>{
@@ -482,8 +502,28 @@ export function buildRoom(scene, factory) {
     return material;
   };
   const flat=makeMat({vertexColors:true});
+  // Painted surfaces are unlit, so their look never depends on a light. A texture with a normal map (walls, floor)
+  // gets relief on top: each pixel is brightened or darkened by how far its normal leans toward the window light.
+  // A flat pixel is multiplied by exactly 1, so only grooves, mouldings and grain change.
+  const reliefLight=new THREE.Vector3(-.55,.7,.25).normalize();
   const sheetMaterial=texture=>{
-    if(!paintCache.has(texture.uuid))paintCache.set(texture.uuid,makeMat({map:texture}));
+    if(!paintCache.has(texture.uuid)){
+      const material=makeMat({map:texture}), normal=texture.userData.normalMap;
+      if(normal){
+        material.onBeforeCompile=shader=>{
+          shader.uniforms.reliefMap={value:normal};shader.uniforms.reliefLight={value:reliefLight};
+          shader.vertexShader=shader.vertexShader.replace('#include <common>','#include <common>\nvarying vec3 vReliefPos;').replace('#include <project_vertex>','#include <project_vertex>\nvReliefPos=(modelMatrix*vec4(transformed,1.0)).xyz;');
+          shader.fragmentShader=shader.fragmentShader.replace('#include <common>','#include <common>\nvarying vec3 vReliefPos;uniform sampler2D reliefMap;uniform vec3 reliefLight;').replace('#include <map_fragment>',`#include <map_fragment>
+            { vec3 q1=dFdx(vReliefPos), q2=dFdy(vReliefPos); vec2 s1=dFdx(vMapUv), s2=dFdy(vMapUv);
+              vec3 N=normalize(cross(q1,q2)), q1p=cross(q2,N), q2p=cross(N,q1);
+              vec3 T=q1p*s1.x+q2p*s2.x, B=q1p*s1.y+q2p*s2.y; float inv=inversesqrt(max(max(dot(T,T),dot(B,B)),1e-12));
+              vec3 m=texture2D(reliefMap,vMapUv).xyz*2.0-1.0;
+              diffuseColor.rgb*=clamp(1.0+1.15*dot((T*m.x+B*m.y)*inv,reliefLight),0.5,1.5); }`);
+        };
+        material.customProgramCacheKey=()=>'relief';
+      }
+      paintCache.set(texture.uuid,material);
+    }
     return paintCache.get(texture.uuid);
   };
   function primitive(key,build) {
@@ -535,6 +575,7 @@ export function buildRoom(scene, factory) {
   }
   const wood=factory.wood(), backWall=factory.wall(), sideWall=factory.wall('side-wall');
   const floorTex=factory.wood('floor');
+  for(const t of [backWall,sideWall,floorTex])t.userData.normalMap=factory.relief(t);
   // Permanent shell. A front wall also covers the detective's reverse view.
   scene.background=new THREE.Color('#2c2318');
   plane(backWall,0,2.24,-2.95,8.96,4.48);

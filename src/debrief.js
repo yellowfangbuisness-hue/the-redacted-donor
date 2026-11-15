@@ -1,8 +1,8 @@
 // The knowledge check asked before and after the story, and the three-part debrief shown after it.
 // Each question has one correct option (`answer` is its index).
 export const QUIZ = [
-  { topic: 'Recognise', q: 'Which of these is a warning sign of a trafficking recruiter?',
-    options: ['They ask for references from your last job.', 'They keep your passport “for processing” and add a debt you never agreed to.', 'They send a written contract a week before you start.'], answer: 1 },
+  { topic: 'Recognise', q: 'Which of these is a warning sign of trafficking for organ removal?',
+    options: ['A hospital asks a donor to meet an independent advocate.', 'A job or loan offer comes with a “routine” blood and tissue test, a new debt and a held passport.', 'An official donor programme explains the risks and gives you time to decide.'], answer: 1 },
   { topic: 'Understand', q: 'Someone signs a form agreeing to donate a kidney. Is that always consent?',
     options: ['Yes. A signature is consent.', 'Yes, as long as they are paid fairly.', 'No. Consent must be informed and freely given. Debt, threats or lies cancel it.'], answer: 2 },
   { topic: 'Respond', q: 'You suspect someone is being trafficked for an organ. What helps most?',
@@ -30,6 +30,16 @@ export const DEBRIEF = [
     ['UNODC: human trafficking', 'https://www.unodc.org/unodc/en/human-trafficking/'],
     ['WHO: transplantation', 'https://www.who.int/health-topics/transplantation'],
     ['NOTTO: India’s organ donation programme', 'https://notto.mohfw.gov.in/'],
+  ] },
+  // Every claim here is from the two sources linked under the cards.
+  { tab: 'Myths', lead: 'Four things people get wrong about organ trafficking. Turn each card.', cards: [
+    ['“Victims are snatched off the street”', 'Most are recruited. A job, a loan or a cash offer comes first, aimed at people in poverty or debt. The promised money often never arrives. (UNODC)'],
+    ['“They signed, so they agreed”', 'Consent does not count when it was won by deception, fraud or abuse of someone’s vulnerability. (UNODC)'],
+    ['“It is about hearts”', 'The organ taken most often is a kidney, then part of a liver: organs a living person can lose. Many victims are left unpaid, and some get no care after the operation. (UNODC)'],
+    ['“Selling a kidney clears the debt”', 'Of 305 people who sold a kidney in Chennai, 96% did it to pay debts. Six years later three in four were still in debt and 86% were in worse health. (JAMA, 2002)'],
+  ], links: [
+    ['UNODC: trafficking for organ removal, explained', 'https://www.unodc.org/unodc/frontpage/2024/June/explainer_-understanding-human-trafficking-for-organ-removal.html'],
+    ['JAMA 2002: selling a kidney in India', 'https://doi.org/10.1001/jama.288.13.1589'],
   ] },
 ];
 export const MESSAGE = 'A signature is not consent when the choice is taken away.';

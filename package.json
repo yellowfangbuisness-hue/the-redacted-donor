@@ -5,8 +5,11 @@
   "scripts": {
     "build": "node build.mjs",
     "build:mac": "node build.mjs && sh native/build.sh",
-    "start": "python3 -m http.server 4173 --bind 127.0.0.1"
+    "build:win": "node build.mjs && sh native/windows.sh",
+    "start": "python3 -m http.server 4173 --bind 127.0.0.1",
+    "test": "node tools/spatial.test.mjs",
+    "test:browser": "node tools/spatial-browser.test.mjs"
   },
   "dependencies": {"three": "0.185.0"},
-  "devDependencies": {"esbuild": "0.28.2"}
+  "devDependencies": {"esbuild": "0.28.2", "@mediapipe/tasks-vision": "0.10.14"}
 }

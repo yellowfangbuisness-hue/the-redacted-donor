@@ -11,4 +11,6 @@
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>LSApplicationCategoryType</key><string>public.app-category.adventure-games</string>
 <key>NSHighResolutionCapable</key><true/>
+<key>NSCameraUseContinuityCameraDeviceType</key><true/>
+<key>NSCameraUsageDescription</key><string>Optional hand tracking watches your hands through the camera. The picture stays on this Mac.</string>
 </dict></plist>

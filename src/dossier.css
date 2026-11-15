@@ -28,6 +28,7 @@ body, html, main { background: #141938; }
 .logo-mark { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; font: 700 15px var(--label); letter-spacing: .14em; text-transform: uppercase; color: #c7cdf2; }
 .logo-mark i { width: 26px; height: 26px; border: 3px solid #fff; transform: rotate(45deg); box-shadow: 0 0 0 4px #3d47b880; }
 .title-content h1 { font: 800 clamp(64px, min(8vw, 13vh), 150px)/.86 var(--display); text-transform: uppercase; letter-spacing: -.01em; color: #fff; text-shadow: 0 6px 30px #0009; }
+.title-note { font: 600 14px/1.4 var(--label); letter-spacing: .06em; color: #c7cdf2; margin: 12px 0 2px; max-width: 46ch; }
 .title-content h1 .the { font: 600 .26em var(--label); letter-spacing: .3em; color: #c7cdf2; text-transform: uppercase; }
 .title-content h1 .redact { background: #000; color: var(--tag); transform: rotate(-1.5deg); padding: 0 .12em .04em; }
 .menu-buttons { gap: 6px; }
@@ -506,12 +507,50 @@ kbd { background: var(--sheet); color: var(--indigo); border: 0; border-radius: 
 @media (prefers-reduced-motion: reduce) { #timepiece.urgent #nextShift { animation: none; } }
 
 /* ═════ Spatial hand tracking ═════ */
-#spatialToggle { margin-top: 8px; }
+.spatial-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
+.spatial-row #spatialToggle { margin-top: 0; }
+#spatialSetup { display: flex; gap: 16px; }
+#spatialSetup[hidden] { display: none; }
+#spatialSetup button, #spatialSkip { all: unset; cursor: pointer; font: 700 13px var(--label); letter-spacing: .1em; text-transform: uppercase; color: #fff; border-bottom: 2px solid var(--tag); padding: 2px 0; text-shadow: 0 1px 3px #000a; }
+#spatialSetup button:focus-visible, #spatialSkip:focus-visible { outline: 2px solid var(--tag); outline-offset: 4px; }
 #spatialHud { order: 4; }
 #spatialNote { margin: 8px 0 0; max-width: 460px; padding: 8px 12px; background: #1e2557e6; border-left: 4px solid var(--tag); color: #fff; font: 600 14px/1.4 var(--text); }
-#spatialView { position: absolute; right: 22px; bottom: 22px; z-index: 5; display: grid; gap: 4px; padding: 6px; background: #1e255799; border-left: 3px solid var(--tag); pointer-events: none; opacity: .85; }
+/* The skeleton view: bottom corner in play, large and central during setup. */
+#spatialView { position: absolute; right: 22px; bottom: 22px; z-index: 8; display: grid; gap: 4px; padding: 7px; background: rgba(10, 12, 22, .42); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, .16); border-radius: 12px; box-shadow: 0 8px 28px rgba(0, 0, 0, .35); pointer-events: none; }
+#spatialView canvas { border-radius: 7px; }
 #spatialView[hidden] { display: none; }
 #spatialView canvas { display: block; width: 176px; height: 132px; }
+#spatialView.big { right: 50%; bottom: 50%; translate: 50% 62%; background: rgba(10, 12, 22, .72); }
+#spatialView.big canvas { width: min(352px, 80vw); height: auto; aspect-ratio: 4 / 3; }
+#spatialView.ok { animation: handOk .7s ease-out; }
+@keyframes handOk { 0%, 60% { box-shadow: 0 0 0 4px #6fe39a, 0 0 26px #6fe39a99; } 100% { box-shadow: 0 0 0 0 #6fe39a00; } }
 #spatialStatus { font: 700 11px var(--label); letter-spacing: .1em; text-transform: uppercase; color: #dfe3ff; }
-#game[data-modal=hands] #hud > #spatialView { visibility: visible; bottom: auto; top: 22px; }
+#game[data-modal=hands] > #spatialView:not(.big) { bottom: auto; top: 22px; }
+/* During setup the menu or HUD underneath steps back and cannot be pressed by accident. */
+#game[data-guide=cal] .title-content, #game[data-guide=cal] #titleSound, #game[data-guide=cal] #hud { opacity: .18; pointer-events: none; }
+/* Setup and tutorial instructions. */
+#spatialCard { position: absolute; left: 50%; top: 20px; translate: -50% 0; z-index: 8; width: min(600px, calc(100vw - 32px)); display: grid; gap: 6px; padding: 14px 18px 12px; background: #1e2557f2; border-left: 4px solid var(--tag); color: #fff; box-shadow: 0 10px 30px #0008; }
+#spatialCard[hidden] { display: none; }
+#spatialStep { font: 700 12px var(--label); letter-spacing: .14em; text-transform: uppercase; color: var(--tag); }
+#spatialTitle { font: 700 24px/1.1 var(--display); letter-spacing: .02em; text-transform: uppercase; }
+#spatialText { margin: 0; min-height: 2.8em; font: 16px/1.4 var(--text); }
+#spatialCard .bar { height: 5px; background: #ffffff26; }
+#spatialBar { display: block; width: 0; height: 100%; background: var(--tag); }
+#spatialSkip { justify-self: end; }
+#spatialSkip kbd { margin-left: 6px; padding: 1px 5px; background: #ffffff26; font: inherit; }
+/* The hand's pointer over menus and buttons, and the button it is over. */
+#handPointer { position: absolute; left: 0; top: 0; z-index: 9; width: 28px; height: 28px; margin: -14px 0 0 -14px; border: 3px solid #ffb347; border-radius: 50%; box-shadow: 0 0 0 2px #0009, 0 0 14px #ffb34799; pointer-events: none; }
+#handPointer.down { width: 20px; height: 20px; margin: -10px 0 0 -10px; background: #ffb347b3; }
+#handPointer[hidden] { display: none; }
+.hand-hover { outline: 3px solid #ffb347 !important; outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) { #spatialView.ok { animation: none; } }
 @media (max-height: 820px) { #spatialToggle small { display: none; } }
+
+/* Narration before the recruiter speaks in the opening scene. */
+#overlay .setup { font-style: italic; opacity: .8; font-size: .92em; }
+
+/* Controls page: one row per action, keyboard and controller side by side. */
+.control-table { display: grid; font: 600 15px var(--text); }
+.control-table > div { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr); gap: 0 16px; align-items: center; padding: 7px 0; border-bottom: 1px solid #1e25571f; }
+.control-table .control-head { font: 700 12px var(--display, var(--text)); letter-spacing: .1em; text-transform: uppercase; color: #1f2456; border-bottom: 2px solid #1f2456; }
+#game[data-comfort=on] .control-table .control-head { color: inherit; border-bottom-color: currentColor; }

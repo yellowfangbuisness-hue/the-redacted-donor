@@ -209,3 +209,25 @@ export function paintPlaque(c, w, h, r, lines, kind = 'enamel') {
   c.font = `bold ${44 * u}px ${PRINT}`; c.fillText((lines[1] || '').toUpperCase(), w / 2, 130 * u, w - 80 * u);
   for (let i = 0; i < 6; i++) { c.fillStyle = '#2a2520'; const x = r() > .5 ? r() * 30 * u : w - r() * 30 * u, y = r() > .5 ? r() * 30 * u : h - r() * 30 * u; c.beginPath(); c.arc(x, y, (2 + r() * 6) * u, 0, 7); c.fill(); }
 }
+
+// Spiderweb cracks in glass: jagged spokes from each point of impact, tied together by broken rings.
+export function cracks(c, hits, reach, r = Math.random) {
+  c.save(); c.lineCap = 'round'; c.strokeStyle = 'rgba(236,244,244,.9)';
+  for (const [x, y] of hits) {
+    const n = 11 + Math.floor(r() * 4), spokes = [];
+    for (let i = 0; i < n; i++) {
+      const a = (i + r() * .7) / n * Math.PI * 2, len = reach * (.45 + r() * .55); spokes.push([a, len]);
+      c.lineWidth = 1 + r() * 1.4; c.beginPath(); c.moveTo(x, y);
+      for (let k = 1; k <= 3; k++) { const q = a + (r() - .5) * .16, d = len * k / 3; c.lineTo(x + Math.cos(q) * d, y + Math.sin(q) * d); }
+      c.stroke();
+    }
+    c.lineWidth = 1;
+    for (const f of [.14, .3, .52]) for (let i = 0; i < n; i++) {
+      const [a, la] = spokes[i], [b, lb] = spokes[(i + 1) % n], d = reach * f; if (la < d || lb < d || r() < .2) continue;
+      const da = d * (.9 + r() * .2), db = d * (.9 + r() * .2);
+      c.beginPath(); c.moveTo(x + Math.cos(a) * da, y + Math.sin(a) * da); c.lineTo(x + Math.cos(b) * db, y + Math.sin(b) * db); c.stroke();
+    }
+    c.fillStyle = 'rgba(236,244,244,.55)'; c.beginPath(); c.arc(x, y, reach * .035, 0, 7); c.fill();
+  }
+  c.restore();
+}

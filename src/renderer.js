@@ -1,4 +1,6 @@
 import {
+  AlwaysDepth,
+  Color,
   DepthTexture,
   HalfFloatType,
   Matrix4,
@@ -216,6 +218,12 @@ const fragmentShader = `
       float n = fbm(q * 3.2 + vec2(uTime * .35, -uTime * .22)) + .5 * fbm(q * 7. + uTime * .6);
       float front = uInk * .75 - e * 1.6 + (n - .75) * .55;
       float body = smoothstep(0., .04, front);
+      // Thick ink also runs down from the top of the frame, each drip at its own pace with a heavy bead at its tip.
+      float cell = q.x * 11., col = floor(cell), d = 1. - uv.y;
+      float dx = (fract(cell) - .5) / 11. + .0035 * sin(d * 38. + col * 2.7), r = (.2 + .28 * hash(vec2(col, 7.))) / 11.;
+      float len = uInk * (.3 + .7 * hash(vec2(col, 3.)));   // long enough to show below the letterbox bar, ahead of the tendrils
+      float drip = max((1. - smoothstep(len - .01, len, d)) * (1. - smoothstep(r * .8, r, abs(dx))), 1. - smoothstep(r * 1.15, r * 1.35, length(vec2(dx, d - len))));
+      body = max(body, drip * step(.002, len));
       float rim = smoothstep(-.035, 0., front) * (1. - smoothstep(0., .05, front));
       finalColor = mix(finalColor, vec3(.012, .01, .014), body);
       finalColor += vec3(1., .97, .93) * rim * 1.3;
@@ -234,10 +242,25 @@ export function createInkRenderer(canvas, scene, camera) {
     alpha: false,
     powerPreference: 'high-performance',
   });
+  renderer.info.autoReset = false;   // counted per game frame (all passes), reset in render()
   const depth = new DepthTexture(1, 1, UnsignedIntType);
   const target = new WebGLRenderTarget(1, 1, { type: HalfFloatType, depthTexture: depth });
   const composer = new EffectComposer(renderer, target);
   const scenePass = new RenderPass(scene, camera);
+  // A hands-on puzzle (everything on layer OVERLAY) is drawn on its own, then laid over the room with its own depth,
+  // so no desk, lamp or wall can poke through it and the ink pass still outlines its parts.
+  const OVERLAY = 1, rigTarget = new WebGLRenderTarget(1, 1, { type: HalfFloatType, depthTexture: new DepthTexture(1, 1, UnsignedIntType) });
+  const merge = new ShaderPass({
+    name: 'Puzzle over room',
+    uniforms: { tDiffuse: { value: null }, tSceneDepth: { value: null }, tRig: { value: null }, tRigDepth: { value: null } },
+    vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0., 1.); }',
+    fragmentShader: `precision highp float; varying vec2 vUv; uniform sampler2D tDiffuse, tSceneDepth, tRig, tRigDepth;
+      void main() { vec4 rig = texture2D(tRig, vUv); float zr = texture2D(tRigDepth, vUv).x;
+        gl_FragColor = vec4(rig.rgb + texture2D(tDiffuse, vUv).rgb * (1. - rig.a), 1.);
+        gl_FragDepth = zr < 1. ? zr : texture2D(tSceneDepth, vUv).x; }`,
+  });
+  merge.enabled = false; merge.material.depthTest = true; merge.material.depthFunc = AlwaysDepth; merge.material.depthWrite = true;
+  let overlay = false; const clearWas = new Color();
   const ink = new ShaderPass({
     name: 'Etched ink',
     vertexShader,
@@ -261,10 +284,12 @@ export function createInkRenderer(canvas, scene, camera) {
   });
   ink.needsSwap = false;
   composer.addPass(scenePass);
+  composer.addPass(merge);
   composer.addPass(ink);
   return {
-    resize(width, height) {
-      const ratio = Math.min(
+    // scale (0.6 to 1) is the game's adaptive resolution: full detail wherever the machine keeps up.
+    resize(width, height, scale = 1) {
+      const ratio = scale * Math.min(
         devicePixelRatio || 1,
         1.55,
         1600 / Math.max(1, width),
@@ -274,11 +299,13 @@ export function createInkRenderer(canvas, scene, camera) {
       renderer.setSize(width, height, false);
       composer.setPixelRatio(ratio);
       composer.setSize(width, height);
+      rigTarget.setSize(Math.round(width * ratio), Math.round(height * ratio));
       renderer.getDrawingBufferSize(ink.uniforms.uResolution.value);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
     },
     render(time, memory, sun, altitude, angle, dawn = 0, cine = 0) {
+      renderer.info.reset();
       ink.uniforms.uDawn.value = dawn;
       ink.uniforms.uCine.value = cine;
       ink.uniforms.uTime.value = time;
@@ -292,11 +319,24 @@ export function createInkRenderer(canvas, scene, camera) {
       // How dusty the air is: the lobby by the window, the scrubbed lab, the stale dispatch office.
       ink.uniforms.uDust.value += ((cam.z < 6.45 ? .7 : cam.z < 10.25 ? .35 : 1) - ink.uniforms.uDust.value) * .05;
       ink.uniforms.uInvVP.value.multiplyMatrices(camera.matrixWorld,camera.projectionMatrixInverse);
-      ink.uniforms.tDepth.value = composer.readBuffer.depthTexture;
+      merge.enabled = overlay;
+      if (overlay) {
+        const bg = scene.background, alpha = renderer.getClearAlpha(); renderer.getClearColor(clearWas);
+        scene.background = null; camera.layers.set(OVERLAY);
+        renderer.setRenderTarget(rigTarget); renderer.setClearColor(0x000000, 0); renderer.clear(); renderer.render(scene, camera); renderer.setRenderTarget(null);
+        camera.layers.set(0); scene.background = bg; renderer.setClearColor(clearWas, alpha);
+        merge.uniforms.tRig.value = rigTarget.texture; merge.uniforms.tRigDepth.value = rigTarget.depthTexture; merge.uniforms.tSceneDepth.value = composer.readBuffer.depthTexture;
+      }
+      // The merge pass swaps the composer's buffers, so the ink pass reads the depth it wrote.
+      ink.uniforms.tDepth.value = (overlay ? composer.writeBuffer : composer.readBuffer).depthTexture;
       composer.render(0);
     },
     setLift(v) { ink.uniforms.uLift.value = v; ink.uniforms.uFlicker.value = v || matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 1; },
     setDetective(v) { ink.uniforms.uDetective.value = v; },
+    // What the last frame cost: draw calls and triangles (for profiling).
+    get info() { return { calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, programs: renderer.info.programs?.length || 0, textures: renderer.info.memory.textures, geometries: renderer.info.memory.geometries }; },
+    // on: a puzzle is open. Lights must also be on the puzzle's layer to light it.
+    setOverlay(on) { if (on && !overlay) scene.traverse((o) => { if (o.isLight) o.layers.enable(OVERLAY); }); overlay = on; },
     setFx(neg, inkAmount, warp) {
       ink.uniforms.uNeg.value = neg;
       ink.uniforms.uInk.value = inkAmount;
@@ -304,7 +344,7 @@ export function createInkRenderer(canvas, scene, camera) {
     },
     dispose() {
       ink.dispose();
-      scenePass.dispose();
+      scenePass.dispose(); merge.dispose(); rigTarget.dispose();
       composer.dispose();
       renderer.dispose();
     },

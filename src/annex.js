@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as models from './models.js';
+import { SpriteSheetAnimator, makeSheet } from './sprites.js';
+import { cracks } from './paper.js';
 
 // The records annex south of the office, plus a few extra searchable props in the office itself.
 // Solid parts are modelled from rounded boxes, lathes and tubes, then merged into one mesh per colour.
@@ -328,9 +330,175 @@ export function buildAnnex(scene, factory) {
     for (let i = 0; i < 3; i++) sheet(printed('consent' + i, ['CONSENT TO DONATE', ['J. Okafor', 'L. Tran', 'M. R.'][i], 'Signed: ~~~~~~', 'Witness: A. Vance'], .26, .19, '#e3d8bb'), .22 + i * .11, .786 + i * .002, 12.08 + i * .05, .26, .19, flat, 0, -.3 + i * .25);
     cyl(4.12, .13, 10.62, .11, .14, .26, steel, 16, 0, 0, true); cyl(4.12, .012, 10.62, .11, .11, .02, rust); box(4.12, .2, 10.62, .2, .004, .2, '#3a4648');
   }
-  // A medical orderly: a paper cut-out who is only there at night, and always faces you.
-  const orderly = new THREE.Mesh(new THREE.PlaneGeometry(.82, 1.86), new THREE.MeshBasicMaterial({ transparent: true, alphaTest: .04, side: THREE.DoubleSide,
-    map: factory.make('character-orderly', 360, 816, (c) => {
+  // ── Specimen jars: cartoon organs in yellowed fluid, tagged with the same file numbers as the patient records ──
+  {
+    const K = 1.5, jarGeo = new THREE.CylinderGeometry(.07 * K, .07 * K, .2 * K, 20), fluid = new THREE.MeshBasicMaterial({ color: '#c3d39a', transparent: true, opacity: .13, depthWrite: false });
+    owned.add(jarGeo); owned.add(fluid);
+    const RED = '#e0473a', DARK = '#9c3a2c', PINK = '#f0a49b', VEIN = '#5470c0', PALE = '#f2e2c4', G = 1.3, m = .1; // organs drawn 1.3× round the jar's middle
+    function jar(x, y, z, organ, ry, tag) {
+      const c = Math.cos(ry), s = Math.sin(ry), at = (lx, ly, lz) => [x + (lx * c + lz * s) * K, y + ly * K, z + (-lx * s + lz * c) * K];
+      const og = (lx, ly, lz) => at(lx * G, m + (ly - m) * G, lz * G);
+      const orb = (lx, ly, lz, r, col, sx = 1, sy = 1, sz = 1) => add(new THREE.SphereGeometry(r * K * G, 14, 10), ...og(lx, ly, lz), col, 0, ry, 0, sx, sy, sz);
+      const tube = (a, b, r, col) => rod(og(...a), og(...b), r * K * G, col, 8);
+      if (organ === 'heart') {
+        orb(-.017, m + .015, 0, .03, RED); orb(.017, m + .015, 0, .03, RED);
+        add(new THREE.ConeGeometry(.045 * K * G, .06 * K * G, 14).rotateX(Math.PI), ...og(0, m - .027, 0), RED, 0, ry, 0);
+        tube([.004, m + .035, 0], [.012, m + .075, 0], .011, '#c45a49'); tube([-.016, m + .03, .01], [-.03, m + .06, .016], .006, VEIN);
+        tube([.02, m - .01, .026], [-.01, m - .03, .022], .003, VEIN);
+      } else if (organ === 'kidney') {
+        add(new THREE.TorusGeometry(.028 * K * G, .022 * K * G, 10, 18, Math.PI * 1.3), ...og(0, m + .005, 0), '#c0503e', 0, ry, 2.2);
+        tube([-.012, m - .002, 0], [.012, m - .07, .004], .005, PALE);
+      } else if (organ === 'lungs') {
+        for (const k of [-1, 1]) { orb(k * .026, m - .005, 0, .03, PINK, .8, 1.45, .75); tube([0, m + .03, 0], [k * .02, m + .012, 0], .005, PALE); }
+        tube([0, m + .03, 0], [0, m + .075, 0], .008, PALE);
+      } else if (organ === 'liver') {
+        orb(-.01, m, 0, .04, DARK, 1.1, .62, .85); orb(.026, m + .004, 0, .024, DARK, 1, .62, .85); orb(.004, m - .022, .022, .011, '#5e7a3a');
+      } else if (organ === 'eye') {
+        orb(0, m, 0, .034, '#efe9da'); orb(0, m, .03, .016, '#3f6f8a', 1, 1, .45); orb(0, m, .035, .007, '#111111', 1, 1, .45);
+        tube([0, m, -.03], [.018, m - .06, -.04], .007, '#d49a8a'); tube([-.02, m + .02, .02], [-.008, m + .028, .027], .0025, RED);
+      }
+      if (organ) { orb(.03, m + .05, .025, .006, '#f4f1e4'); orb(-.028, m + .065, .02, .004, '#f4f1e4'); }   // a couple of bubbles
+      // Jar: fluid-filled glass with a dark lid, a glass base ring and a paper tag on the front.
+      const glass = new THREE.Mesh(jarGeo, fluid); glass.position.set(x, y + .1 * K, z); glass.renderOrder = 1; root.add(glass);
+      cyl(x, y + .21 * K, z, .076 * K, .074 * K, .025 * K, '#2c2a24', 20); cyl(x, y + .227 * K, z, .05 * K, .05 * K, .012 * K, '#2c2a24', 16);
+      add(new THREE.TorusGeometry(.07 * K, .006 * K, 6, 24), x, y + .006 * K, z, '#c9cfc4', Math.PI / 2);
+      const label = factory.make('jar-' + tag, 160, 104, (g, w, h, r) => {
+        g.fillStyle = '#e6d9b4'; g.fillRect(0, 0, w, h); for (let i = 0; i < 260; i++) { g.fillStyle = 'rgba(90,60,30,.18)'; g.fillRect(r() * w, r() * h, 2, 1); }
+        g.strokeStyle = '#6f5636'; g.lineWidth = 3; g.strokeRect(5, 5, w - 10, h - 10);
+        g.fillStyle = '#2b2118'; g.textAlign = 'center'; g.font = 'bold 30px Georgia'; g.fillText(tag.split('|')[0], w / 2, 44);
+        g.font = '20px monospace'; g.fillStyle = '#5a2a20'; g.fillText(tag.split('|')[1] || '', w / 2, 78);
+      });
+      sheet(label, ...at(0, .045, .073), .085 * K, .055 * K, 0, ry);
+    }
+    // Intake office: on top of and inside the narrow records shelf, and on the tall archive cabinet.
+    jar(2.87, 2.81, -2.47, 'heart', 0, 'HEART|No. 402'); jar(3.22, 2.81, -2.47, 'kidney', 0, 'KIDNEY|No. 404'); jar(3.57, 2.81, -2.47, 'eye', 0, 'CORNEA|No. 407'); jar(3.92, 2.81, -2.47, 'eye', 0, 'CORNEA|No. 403');
+    jar(3.86, 1.025, -2.4, 'liver', 0, 'LIVER|No. 405'); jar(4.1, 1.025, -2.4, 'kidney', 0, 'KIDNEY|No. 411');
+    jar(-3.95, 1.995, -1.83, 'lungs', .3, 'LUNG|No. 401');
+    // Lab: a specimen shelf over the radiator; one jar is still empty, waiting for Mateo.
+    { const sx = 4.31, y = 1.45; box(sx, y - .015, 8.95, .27, .03, 1.3, wood); for (const z of [8.45, 9.45]) box(4.42, y - .1, z, .06, .16, .03, darkWood); }
+    jar(4.3, 1.45, 8.48, 'heart', -Math.PI / 2, 'HEART|No. 412'); jar(4.3, 1.45, 8.8, 'lungs', -Math.PI / 2, 'LUNG|No. 413');
+    jar(4.3, 1.45, 9.12, 'kidney', -Math.PI / 2, 'KIDNEY|No. 415'); jar(4.3, 1.45, 9.43, null, -Math.PI / 2, '409|RESERVED');
+    jar(-2.88, .92, 6.72, 'liver', .3, 'LIVER|No. 408'); jar(.36, .785, 7.76, 'eye', .4, 'CORNEA|No. 410');
+    // Dispatch office: packed for the courier on the filing cabinet and the desk.
+    jar(-2.8, 1.425, 13.95, 'kidney', Math.PI, 'KIDNEY|No. 416'); jar(-2.42, 1.425, 13.86, 'heart', Math.PI, 'HEART|No. 417'); jar(-.62, .78, 12.42, 'liver', Math.PI, 'LIVER|No. 418');
+  }
+
+  // ── Holding cell: walled off in the dispatch office's north-east corner, behind the lab's padlocked "Records" door ──
+  // By day it passes for a store room. The two mirrors in its south wall are one-way glass, cracked from the inside:
+  // the office sees a mirror, whoever is held here sees out. `haunted` holds what is only there at night and for the
+  // detective (ink, hearts, shadows burned on the wall); `tally` is what the UV lamp brings up on the glass.
+  const haunted = new THREE.Group(), tally = new THREE.Group(), hearts = [];
+  root.add(haunted, tally);
+  {
+    const X0 = 1.4, X1 = 3.2, Z0 = 10.31, Z1 = 12.0, T = .08, H = 2.6, wall = '#4f4132', tile = '#a9ab9d', xc = (X0 + X1) / 2, zc = (Z0 + Z1) / 2, zs = Z1 - T / 2;
+    const flatMesh = (tex, x, y, z, w, h, ry, group, side = THREE.DoubleSide) => {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: tex, transparent: side === THREE.DoubleSide, depthWrite: side !== THREE.DoubleSide, side }));
+      m.position.set(x, y, z); m.rotation.y = ry; group.add(m); owned.add(m.geometry); owned.add(m.material); return m;
+    };
+    // West wall with the doorway (z 11.1 to 11.92), east wall, a south wall built round two window openings, a flat roof.
+    box(X0 + T / 2, H / 2, (Z0 + 11.1) / 2, T, H, 11.1 - Z0, wall); box(X0 + T / 2, (2.05 + H) / 2, 11.51, T, H - 2.05, .82, wall);
+    box(X1 - T / 2, H / 2, zc, T, H, Z1 - Z0, wall);
+    box(xc, .5, zs, X1 - X0, 1.0, T, wall); box(xc, (1.95 + H) / 2, zs, X1 - X0, H - 1.95, T, wall);
+    for (const [a, b] of [[1.4, 1.62], [2.24, 2.36], [2.98, 3.2]]) box((a + b) / 2, 1.475, zs, b - a, .95, T, wall);
+    box(xc, H + .03, zc, X1 - X0 + .06, .06, Z1 - Z0 + .06, '#3e3327');
+    // Tiled to waist height inside, like the lab.
+    box(xc, .5, Z0 + .016, X1 - X0 - 2 * T, 1.0, .012, tile); box(xc, .5, Z1 - T - .006, X1 - X0 - 2 * T, 1.0, .012, tile);
+    box(X1 - T - .006, .5, zc, .012, 1.0, Z1 - Z0 - T, tile); box(X0 + T + .006, .5, (Z0 + 11.1) / 2, .012, 1.0, 11.1 - Z0, tile);
+    // The cell door stands open against the outside of the west wall, its bolt and padlock on the outside.
+    box(X0 - .03, 1.02, 10.71, .04, 2.04, .78, '#4a4338'); box(X0 - .06, 1.05, 10.42, .03, .06, .2, iron); box(X0 - .065, .93, 10.36, .03, .07, .06, brass);
+    sheet(printed('store', ['RECORDS', 'NO ENTRY', 'Staff only'], .44, .2, '#d9c9a3'), X0 - .052, 1.7, 10.71, .44, .2, 0, -Math.PI / 2);
+    // The back of the lab's padlocked door, scratched at hand height.
+    box(2.32, 1.05, Z0 + .03, .92, 2.1, .03, '#4a4338');
+    sheet(factory.make('cell-scratches', 256, 256, (c, w, h, r) => {
+      c.strokeStyle = 'rgba(214,204,180,.75)'; c.lineCap = 'round';
+      for (let g = 0; g < 7; g++) { const x = 20 + r() * (w - 70), y = 20 + r() * (h - 110), len = 40 + r() * 60; for (let k = 0; k < 4; k++) { c.lineWidth = 1 + r() * 1.5; c.beginPath(); c.moveTo(x + k * 9, y + r() * 8); c.lineTo(x + k * 9 + 6 + r() * 6, y + len * (.7 + r() * .3)); c.stroke(); } }
+    }), 2.32, 1.25, Z0 + .047, .8, .8, 0, 0, 0, true);
+
+    // One-way glass: a mirror on the office side only, cracks that show from both sides, and the UV marks inside.
+    const mirror = factory.make('cell-mirror', 128, 192, (c, w, h, r) => {
+      const g = c.createLinearGradient(0, 0, w, h); g.addColorStop(0, '#46565b'); g.addColorStop(.5, '#27343a'); g.addColorStop(1, '#161d21'); c.fillStyle = g; c.fillRect(0, 0, w, h);
+      c.strokeStyle = 'rgba(210,228,230,.16)'; for (let i = 0; i < 5; i++) { c.lineWidth = 3 + r() * 9; c.beginPath(); c.moveTo(-20 + i * 34, h); c.lineTo(40 + i * 34, 0); c.stroke(); }
+    });
+    const marks = [['NOT A', 'CLINIC'], ['THEY', 'TOOK HIM', '409']];
+    [[1.62, 2.24, [[100, 190], [235, 345]]], [2.36, 2.98, [[205, 165], [85, 330], [255, 420]]]].forEach(([a, b, hits], i) => {
+      const x = (a + b) / 2, w = b - a;
+      flatMesh(mirror, x, 1.475, Z1 + .001, w, .95, 0, root, THREE.FrontSide);
+      flatMesh(factory.make('cell-cracks-' + i, 320, 490, (c, cw, ch, r) => { c.fillStyle = 'rgba(170,192,192,.1)'; c.fillRect(0, 0, cw, ch); cracks(c, hits, 170, r); }), x, 1.475, Z1 + .004, w, .95, 0, root);
+      flatMesh(factory.make('cell-tally-' + i, 320, 490, (c, cw, ch) => {
+        c.strokeStyle = c.fillStyle = '#8ff4ff'; c.shadowColor = '#35d6ff'; c.shadowBlur = 14; c.lineWidth = 4; c.lineCap = 'round'; c.textAlign = 'center';
+        for (let k = 0; k < (i ? 9 : 14); k++) { const tx = 40 + k * 17 + Math.floor(k / 5) * 14, ty = i ? 380 : 60; c.beginPath(); if (k % 5 === 4) { c.moveTo(tx - 74, ty + 44); c.lineTo(tx - 8, ty + 6); } else { c.moveTo(tx, ty); c.lineTo(tx + 3, ty + 50); } c.stroke(); }
+        c.font = 'bold 44px "Courier New", monospace'; marks[i].forEach((l, k) => { c.save(); c.translate(cw / 2, (i ? 110 : 230) + k * 70); c.rotate(k % 2 ? .05 : -.07); c.fillText(l, 0, 0); c.restore(); });
+      }), x, 1.475, Z1 - .012, w, .95, Math.PI, tally);   // faces into the cell, so it reads the right way round
+    });
+
+    // Floor drain. The ink round it is only there at night.
+    cyl(2.3, .005, 10.95, .09, .09, .01, '#2a2a27', 20); for (const dx of [-.04, 0, .04]) box(2.3 + dx, .012, 10.95, .012, .006, .15, steel);
+    const ink = factory.make('cell-ink', 256, 256, (c, w, h, r) => {
+      c.fillStyle = '#050506'; for (let i = 0; i < 26; i++) { const a = r() * 7, d = r() * 62; c.beginPath(); c.ellipse(128 + Math.cos(a) * d, 128 + Math.sin(a) * d, 26 + r() * 40, 20 + r() * 30, r() * 3, 0, 7); c.fill(); }
+      for (let i = 0; i < 9; i++) { const a = r() * 7, d = 96 + r() * 26; c.beginPath(); c.arc(128 + Math.cos(a) * d, 128 + Math.sin(a) * d, 2 + r() * 6, 0, 7); c.fill(); }   // drips
+      c.strokeStyle = 'rgba(206,220,232,.4)'; c.lineCap = 'round';                                                                                                    // the lamp, reflected
+      for (const [x, y, q, len] of [[96, 100, 30, .9], [150, 136, 20, .7], [116, 160, 14, .5]]) { c.lineWidth = 2 + q / 12; c.beginPath(); c.arc(x, y, q, 3.6, 3.6 + len); c.stroke(); }
+    });
+    for (const [x, z, w, d, rz] of [[2.3, 10.95, 1.05, .85, .3], [1.82, 11.52, .5, .42, 2.1], [2.84, 10.6, .46, .4, 4]]) haunted.add(sheet(ink, x, .004 + w * .002, z, w, d, flat, 0, rz, true));
+    // Shadows of people, burned onto the east wall like the ones a flash leaves behind.
+    const shades = factory.make('cell-shadows', 512, 512, (c, w, h) => {
+      c.fillStyle = 'rgba(16,13,12,.5)'; c.shadowColor = 'rgba(16,13,12,.6)'; c.shadowBlur = 14;
+      const body = (x, top, s, arms) => {
+        c.beginPath(); c.ellipse(x, top + 30 * s, 22 * s, 27 * s, 0, 0, 7); c.fill();
+        c.beginPath(); c.moveTo(x - 40 * s, top + 70 * s); c.lineTo(x + 40 * s, top + 70 * s); c.lineTo(x + 34 * s, h); c.lineTo(x - 34 * s, h); c.closePath(); c.fill();
+        c.lineCap = 'round'; c.strokeStyle = c.fillStyle; c.lineWidth = 17 * s;
+        for (const [side, lift] of arms) { c.beginPath(); c.moveTo(x + side * 36 * s, top + 84 * s); c.lineTo(x + side * 66 * s, top + (84 - lift * 60) * s); c.lineTo(x + side * 62 * s, top + (84 - lift * 150) * s); c.stroke(); }
+      };
+      body(120, 150, 1.25, [[-1, 1], [1, 1]]); body(290, 215, 1.1, [[1, .9], [-1, -.8]]); body(430, 330, .8, [[-1, .7], [1, .6]]);
+    });
+    haunted.add(sheet(shades, X1 - T - .02, 1.0, 11.1, 1.5, 1.85, 0, -Math.PI / 2, 0, true));
+
+    // Left luggage: suitcases with their straps still buckled, and shoes with no owners.
+    const strap = '#2b2118', cases3 = [[1.72, .11, 10.72, .42, .2, .62, '#6b4a2c', 0], [1.72, .29, 10.7, .36, .15, .5, '#3f4a44', .22], [2.96, .24, 11.58, .16, .46, .6, '#7a5b33', .06]];
+    for (const [x, y, z, w, h, d, col, ry] of cases3) {
+      box(x, y, z, w, h, d, col, ry); const c = Math.cos(ry), s = Math.sin(ry);
+      for (const k of [-.3, .3]) box(x + k * d * s, y, z + k * d * c, w + .012, h + .012, .035, strap, ry);
+      box(x + (w / 2 + .012) * c, y, z - (w / 2 + .012) * s, .02, .03, .13, brass, ry);
+    }
+    for (const [x, z, ry, col, k] of [[2.1, 11.62, .4, '#2a211a', 1], [2.3, 11.72, -.9, '#2a211a', 1], [2.8, 10.8, 1.2, '#5a3a26', 1], [2.52, 11.74, .1, '#3a3028', 1], [1.98, 11.06, 2, '#6a5a48', .68]]) {
+      add(new THREE.SphereGeometry(.05 * k, 10, 8), x, .036 * k, z, col, 0, ry, 0, 2.3, .72, 1);
+      add(new THREE.SphereGeometry(.045 * k, 10, 8), x - Math.cos(ry) * .05 * k, .06 * k, z + Math.sin(ry) * .05 * k, col, 0, ry, 0, 1.1, 1.1, .95);
+    }
+    // What makes it a store room by day: a shelf of box files, a mop and bucket, and a steel tray left on the floor.
+    box(X1 - T - .13, 2.1, 11.0, .26, .03, 1.2, wood); for (const z of [10.5, 11.5]) box(X1 - T - .06, 2.0, z, .1, .17, .03, darkWood);
+    for (let i = 0; i < 5; i++) box(X1 - T - .13, 2.26, 10.52 + i * .23, .22, .28, .09 + (i % 2) * .05, folderCols[i * 3 % folderCols.length]);
+    cyl(2.96, .13, 10.46, .1, .12, .26, steel, 16, 0, 0, true); rod([3.0, .03, 10.44], [2.9, 1.5, 10.36], .013, wood); ball(3.0, .08, 10.44, .07, '#b7b09c', 1, .7, 1);
+    box(2.5, .016, 10.52, .36, .022, .24, steel); box(2.5, .03, 10.52, .3, .006, .18, '#9a9d98');
+
+    // Ink hearts, drawn like a 1930s anatomy plate: they throb and hang a little above the ink.
+    const INK = '#14110f', PAPER = '#e7dcc0';
+    const heartSheet = makeSheet('ink-heart', { w: 200, h: 250, res: 1, paint: (c, pose) => {
+      const k = 1 + pose.legs * .07;   // the beat
+      c.clearRect(0, 0, 200, 250); c.save(); c.translate(100, 150); c.scale(k, k); c.rotate(pose.lean * .6); c.translate(-100, -150);
+      c.lineJoin = c.lineCap = 'round';
+      const vessel = (pts, w) => { for (const [lw, col] of [[w + 7, INK], [w, PAPER]]) { c.strokeStyle = col; c.lineWidth = lw; c.beginPath(); c.moveTo(...pts[0]); c.bezierCurveTo(...pts[1], ...pts[2], ...pts[3]); c.stroke(); } };
+      vessel([[150, 96], [158, 80], [160, 62], [156, 44]], 15);                 // vena cava
+      vessel([[104, 86], [96, 44], [128, 20], [150, 52]], 20);                  // aortic arch
+      vessel([[86, 88], [80, 66], [70, 52], [56, 44]], 15);                     // pulmonary artery
+      const body = () => { c.beginPath(); c.moveTo(72, 86); c.bezierCurveTo(38, 92, 24, 138, 48, 178); c.bezierCurveTo(62, 204, 92, 226, 118, 234); c.bezierCurveTo(152, 208, 178, 168, 170, 126); c.bezierCurveTo(166, 100, 146, 82, 122, 84); c.bezierCurveTo(104, 74, 88, 76, 72, 86); c.closePath(); };
+      body(); c.fillStyle = PAPER; c.fill();
+      c.save(); body(); c.clip(); c.strokeStyle = 'rgba(20,17,15,.5)'; c.lineWidth = 1.6;                                          // hatching on the shaded side
+      for (let i = 0; i < 26; i++) { c.beginPath(); c.moveTo(10 + i * 7, 240); c.lineTo(10 + i * 7 - 70, 110 + i * 3); c.stroke(); }
+      c.fillStyle = 'rgba(231,220,192,.82)'; c.beginPath(); c.ellipse(128, 136, 40, 62, .3, 0, 7); c.fill(); c.restore();
+      body(); c.strokeStyle = INK; c.lineWidth = 6; c.stroke();
+      c.lineWidth = 3; c.beginPath(); c.moveTo(98, 92); c.bezierCurveTo(112, 130, 104, 176, 116, 222); c.moveTo(106, 132); c.bezierCurveTo(126, 146, 140, 168, 142, 190); c.moveTo(104, 154); c.bezierCurveTo(88, 166, 76, 182, 70, 196); c.stroke();
+      c.lineWidth = 4; c.beginPath(); c.ellipse(60, 104, 20, 15, -.5, 0, 7); c.fillStyle = PAPER; c.fill(); c.stroke();           // auricle
+      c.restore();
+    } });
+    for (const [x, y, z, size] of [[2.3, .2, 10.95, .34], [1.82, .14, 11.52, .22], [2.5, .06, 10.52, .22], [2.08, .46, 10.66, .2], [2.74, .12, 11.46, .18]]) {
+      const anim = new SpriteSheetAnimator(heartSheet, { height: size, fps: 6 }); anim.mesh.position.set(x, y, z); haunted.add(anim.mesh); hearts.push({ anim, x, y, z });
+    }
+  }
+
+  // A medical orderly: a paper cut-out who is only there at night, and always faces you. The drawing is the original;
+  // it rocks and bobs as one piece.
+  const orderlyAnim = new SpriteSheetAnimator(makeSheet('character-orderly', { w: 360, h: 816, paint: (c, pose) => {
+      c.clearRect(0, 0, 360, 816); c.save(); c.translate(180, 806); c.rotate(pose.lean + pose.head * .3); c.translate(-180, -806 - pose.bob);
       const P = (pts, fill) => { c.fillStyle = fill; c.beginPath(); pts.forEach(([x, y], i) => i ? c.lineTo(x, y) : c.moveTo(x, y)); c.closePath(); c.fill(); };
       P([[104, 250], [150, 196], [210, 196], [256, 250], [272, 640], [222, 664], [138, 664], [88, 640]], '#b9bdb2');   // long coat
       P([[150, 196], [180, 300], [210, 196]], '#8f948b'); P([[128, 664], [168, 664], [164, 800], [116, 800]], '#23282b'); P([[192, 664], [232, 664], [244, 800], [196, 800]], '#23282b');
@@ -340,8 +508,9 @@ export function buildAnnex(scene, factory) {
       P([[138, 138], [222, 138], [214, 186], [146, 186]], '#d9dcd2');                                                  // mask
       c.strokeStyle = '#14100c'; c.lineWidth = 5; c.beginPath(); c.moveTo(150, 120); c.lineTo(172, 124); c.moveTo(188, 124); c.lineTo(210, 120); c.stroke();
       P([[196, 400], [268, 392], [276, 500], [204, 508]], '#5d4832'); P([[206, 410], [260, 404], [266, 490], [212, 496]], '#e3d8bb'); // clipboard
-    }) }));
-  orderly.position.set(4.2, .93, 7.9); orderly.visible = false; root.add(orderly); owned.add(orderly.geometry); owned.add(orderly.material);
+      c.restore();
+    } }), { height: 1.86, width: .82 }), orderly = orderlyAnim.mesh;
+  orderly.position.set(4.2, 0, 7.9); orderly.visible = false; root.add(orderly);
 
   // Merge every solid part that shares a colour into one lit mesh.
   for (const [col, list] of parts) {
@@ -354,6 +523,16 @@ export function buildAnnex(scene, factory) {
   }
   return { root, glassPane,
     // Called every frame: the orderly appears on Mateo's night shifts and turns to face the player.
-    face(camera, present) { orderly.visible = present; if (present) orderly.rotation.y = Math.atan2(camera.position.x - 4.2, camera.position.z - 7.9); },
-    dispose() { scene.remove(root); owned.forEach((o) => o.dispose()); } };
+    face(camera, present) {
+      orderly.visible = present; if (!present) return;
+      const near = Math.hypot(camera.position.x - 4.2, camera.position.z - 7.9) < 3.2;
+      orderlyAnim.play(near ? 'look' : 'idle'); orderlyAnim.update(null, camera, Math.atan2(camera.position.x - 4.2, camera.position.z - 7.9));
+    },
+    // Called every frame. shown: the ink, hearts and shadows are there (not on Mateo's day shifts); lit: the UV marks glow.
+    haunt(camera, shown, lit) {
+      haunted.visible = shown; tally.visible = shown && lit; if (!shown) return;
+      const t = performance.now() / 1000;
+      hearts.forEach((h, i) => { h.anim.play('walk'); h.anim.update(null, camera, Math.atan2(camera.position.x - h.x, camera.position.z - h.z)); h.anim.mesh.position.y = h.y + Math.sin(t * 1.3 + i * 1.7) * .025; });
+    },
+    dispose() { scene.remove(root); owned.forEach((o) => o.dispose()); orderlyAnim.dispose(); hearts.forEach((h) => h.anim.dispose()); } };
 }

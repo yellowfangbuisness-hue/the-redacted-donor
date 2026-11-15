@@ -6,6 +6,8 @@ cache=$(mktemp -d "${TMPDIR:-/tmp}/donor-build.XXXXXX")
 app="$cache/$name/Contents"
 mkdir -p "$app/MacOS" "$app/Resources"
 cp -X index.html "$app/Resources/index.html"
+# Hand tracking's own files, so the app needs no internet for it (the game downloads them if this is missing).
+if [ -f hand-tracking.js ]; then cp -X hand-tracking.js "$app/Resources/hand-tracking.js"; fi
 cp -X native/Info.plist "$app/Info.plist"
 trap 'python3 -c "import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)" "$cache"' EXIT
 iconset="$cache/Donor.iconset"

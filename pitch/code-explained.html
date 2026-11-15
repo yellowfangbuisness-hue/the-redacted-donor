@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>The Redacted Donor: how the code works</title>
+<style>
+  @page { size: A4; margin: 17mm 16mm 18mm; }
+  :root { --ink: #1b1d2b; --navy: #1e2557; --amber: #b9860b; --rule: #cfd2df; --soft: #f3f4f8; --code: #f6f3ea; }
+  * { box-sizing: border-box; }
+  body { font: 10.4pt/1.5 "Helvetica Neue", Helvetica, Arial, sans-serif; color: var(--ink); margin: 0; }
+  h1 { font: 700 27pt/1.1 "Helvetica Neue", Helvetica, Arial, sans-serif; color: var(--navy); margin: 0 0 4pt; letter-spacing: -.01em; }
+  .sub { font-size: 12.5pt; color: #4a4e68; margin: 0 0 14pt; }
+  h2 { font: 700 15.5pt/1.2 "Helvetica Neue", Helvetica, Arial, sans-serif; color: var(--navy); margin: 20pt 0 6pt; padding-top: 7pt; border-top: 2.2pt solid var(--navy); break-after: avoid; }
+  h3 { font: 700 11.4pt/1.25 "Helvetica Neue", Helvetica, Arial, sans-serif; color: var(--ink); margin: 13pt 0 3pt; break-after: avoid; }
+  p { margin: 0 0 6.5pt; }
+  ul, ol { margin: 0 0 7pt; padding-left: 16pt; }
+  li { margin-bottom: 2.6pt; }
+  code { font: 8.9pt/1.35 Menlo, Consolas, monospace; background: var(--soft); padding: .5pt 2.6pt; border-radius: 2pt; }
+  pre { font: 8.1pt/1.42 Menlo, Consolas, monospace; background: var(--code); border-left: 2.6pt solid var(--amber); padding: 6.5pt 8pt; margin: 4pt 0 8pt; white-space: pre-wrap; word-break: break-word; break-inside: avoid; }
+  pre code { background: none; padding: 0; font: inherit; }
+  table { border-collapse: collapse; width: 100%; margin: 4pt 0 9pt; font-size: 9.3pt; break-inside: auto; }
+  th { text-align: left; background: var(--navy); color: #fff; font-weight: 600; padding: 4pt 6pt; }
+  td { padding: 3.6pt 6pt; border-bottom: .6pt solid var(--rule); vertical-align: top; }
+  tr { break-inside: avoid; }
+  td code { font-size: 8.4pt; }
+  .lead { font-size: 11.3pt; line-height: 1.5; }
+  .box { background: var(--soft); border-left: 2.6pt solid var(--navy); padding: 6.5pt 9pt; margin: 6pt 0 9pt; break-inside: avoid; }
+  .box b { color: var(--navy); }
+  .fig { margin: 6pt 0 9pt; break-inside: avoid; }
+  .fig svg { width: 100%; height: auto; display: block; }
+  .cap { font-size: 8.7pt; color: #5a5e78; margin-top: 2pt; }
+  .toc { columns: 2; column-gap: 22pt; font-size: 9.8pt; margin: 0 0 6pt; padding: 0; list-style: none; }
+  .toc li { margin-bottom: 2pt; break-inside: avoid; }
+  .toc b { color: var(--navy); display: inline-block; width: 15pt; }
+  .small { font-size: 9pt; color: #4a4e68; }
+  svg text { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }
+  .n { fill: #fff; stroke: #1e2557; stroke-width: 1.2; }
+  .a { fill: #fbf1d3; stroke: #b9860b; stroke-width: 1.2; }
+  .g { fill: #eef0f7; stroke: #8a8fb0; stroke-width: 1; }
+  .l { stroke: #1e2557; stroke-width: 1.3; fill: none; marker-end: url(#arr); }
+  .t { font-size: 10px; fill: #1b1d2b; }
+  .tb { font-size: 10.5px; font-weight: 700; fill: #1e2557; }
+  .ts { font-size: 8.6px; fill: #4a4e68; }
+</style>
+</head>
+<body>
+
+<h1>The Redacted Donor</h1>
+<p class="sub">How the code works: a guide for the team, written so that someone who has never opened the project can follow it.</p>
+
+<p class="lead">The Redacted Donor is a 3D detective game about organ trafficking that runs in a web browser. You play Mateo, a man tricked by a fake job agency, and the detective who follows the evidence he left behind. The whole game is one file, <code>index.html</code>, built from about 8,800 lines of JavaScript. This guide explains what each part does, how the parts talk to each other, and where to look when you want to change something.</p>
+
+<ul class="toc">
+  <li><b>1</b> The big picture</li>
+  <li><b>2</b> The files, one by one</li>
+  <li><b>3</b> What happens in one frame</li>
+  <li><b>4</b> The story rules and the save</li>
+  <li><b>5</b> Drawing the world</li>
+  <li><b>6</b> Characters and guards</li>
+  <li><b>7</b> Hands-on puzzles</li>
+  <li><b>8</b> Hand tracking</li>
+  <li><b>9</b> Sound and voice</li>
+  <li><b>10</b> Online records and security</li>
+  <li><b>11</b> Building, packaging and testing</li>
+  <li><b>12</b> Where to change things</li>
+</ul>
+
+<h2>1. The big picture</h2>
+<p>The game is written in plain JavaScript with one library, <b>Three.js</b>, which draws 3D graphics in the browser. There is no game engine underneath it, and there are no 3D model files: the rooms, the furniture, the characters and the documents are built and painted by code when the game starts. The only things made outside the code are four illustrations and the recorded sounds and voice lines, which the build embeds in the page. That is why the game ships as one file, plus a second one that is only needed for hand tracking.</p>
+<p>A small build script glues everything together. It reads the source files, bundles them with a tool called <b>esbuild</b>, embeds the artwork and the recorded sounds as text, and writes <code>index.html</code>. The same file is then wrapped three ways: opened directly in a browser, placed inside a Mac app, or copied into a Windows folder with a launcher.</p>
+
+<div class="fig">
+<svg viewBox="0 0 720 196" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#1e2557"/></marker></defs>
+  <rect class="g" x="6" y="10" width="170" height="174" rx="4"/>
+  <text class="tb" x="16" y="28">Source (src/)</text>
+  <text class="t" x="16" y="48">game.js and 21 other modules</text>
+  <text class="t" x="16" y="64">shell.html (the page)</text>
+  <text class="t" x="16" y="80">ui.css, dossier.css</text>
+  <text class="t" x="16" y="96">art/ (4 pictures)</text>
+  <text class="t" x="16" y="112">audio/ (sounds, voice lines)</text>
+  <text class="t" x="16" y="128">vendor/ (hand model)</text>
+  <text class="ts" x="16" y="150">Three.js, esbuild and the</text>
+  <text class="ts" x="16" y="162">hand-tracking library come</text>
+  <text class="ts" x="16" y="174">from npm (node_modules/)</text>
+  <rect class="a" x="214" y="66" width="120" height="62" rx="4"/>
+  <text class="tb" x="232" y="90">build.mjs</text>
+  <text class="ts" x="226" y="106">bundles, embeds,</text>
+  <text class="ts" x="226" y="118">writes the page policy</text>
+  <rect class="n" x="374" y="34" width="150" height="52" rx="4"/>
+  <text class="tb" x="388" y="56">index.html</text>
+  <text class="ts" x="388" y="72">the whole game, 11.7 MB</text>
+  <rect class="n" x="374" y="108" width="150" height="52" rx="4"/>
+  <text class="tb" x="388" y="130">hand-tracking.js</text>
+  <text class="ts" x="388" y="146">hand model files, 23 MB</text>
+  <rect class="g" x="566" y="10" width="148" height="44" rx="4"/>
+  <text class="tb" x="578" y="29">Any browser</text>
+  <text class="ts" x="578" y="44">open index.html</text>
+  <rect class="g" x="566" y="76" width="148" height="44" rx="4"/>
+  <text class="tb" x="578" y="95">Mac app</text>
+  <text class="ts" x="578" y="110">native/build.sh</text>
+  <rect class="g" x="566" y="142" width="148" height="44" rx="4"/>
+  <text class="tb" x="578" y="161">Windows folder + zip</text>
+  <text class="ts" x="578" y="176">native/windows.sh</text>
+  <path class="l" d="M176 97H212"/><path class="l" d="M334 86L372 62"/><path class="l" d="M334 108L372 132"/>
+  <path class="l" d="M524 52L564 34"/><path class="l" d="M524 62L564 96"/><path class="l" d="M524 72L564 160"/>
+</svg>
+<div class="cap">Figure 1. From source files to the three ways of running the game.</div>
+</div>
+
+<div class="box"><b>Words used in this guide.</b> A <i>module</i> is one source file. A <i>frame</i> is one picture drawn on screen; the game draws 60 or more a second. A <i>shader</i> is a small program that runs on the graphics card for every pixel. <i>State</i> is the set of facts the game remembers: which case you are on, what you have found, your score. Code shown in this guide is copied from the source and laid out for reading; three dots mark lines that were left out.</div>
+
+<h2>2. The files, one by one</h2>
+<p>All game code is in <code>src/</code>. The table lists every module with its size and its job. <code>game.js</code> is the conductor: it creates everything else and runs the loop. Most other modules do one thing and know nothing about the rest.</p>
+<table>
+  <thead><tr><th style="width:21%">File</th><th style="width:9%">Lines</th><th>What it does</th></tr></thead>
+  <tr><td><code>game.js</code></td><td>2,119</td><td>Starts the game, runs the frame loop, reads the keyboard, mouse, controller and hands, shows every menu and panel, and applies the story rules to what the player does.</td></tr>
+  <tr><td><code>campaign.js</code></td><td>56</td><td>The story rules as pure functions: a fresh game, loading a save safely, scoring, starting and losing a case, which leads are available now.</td></tr>
+  <tr><td><code>casebook.js</code></td><td>261</td><td>The story's data: the three cases, every lead and where it is in the room, the evidence, the shop items, and the optional things you can search.</td></tr>
+  <tr><td><code>shifts.js</code></td><td>35</td><td>The day and night clock, and the window guard's timetable.</td></tr>
+  <tr><td><code>debrief.js</code></td><td>45</td><td>The three quiz questions and the four tabs of debrief cards shown after the ending.</td></tr>
+  <tr><td><code>legal.js</code></td><td>28</td><td>The text of the privacy policy and the terms.</td></tr>
+  <tr><td><code>room.js</code></td><td>977</td><td>Builds the intake office and the shell of the other rooms, and paints every wall, floor and document texture on a canvas.</td></tr>
+  <tr><td><code>props.js</code></td><td>835</td><td>Furniture and story props in the intake office, the evidence board, the street outside the window, and the opening scene's choreography.</td></tr>
+  <tr><td><code>annex.js</code></td><td>538</td><td>The lab, the dispatch office and the holding cell: benches, radio, specimen jars, cracked mirrors, ink hearts.</td></tr>
+  <tr><td><code>models.js</code></td><td>290</td><td>Reusable 3D furniture: radiator, table, trolley, teleprinter, bench, chest.</td></tr>
+  <tr><td><code>paper.js</code></td><td>233</td><td>Paints period paperwork onto canvases: forms, tags, plaques, and the cracks in glass.</td></tr>
+  <tr><td><code>thumbnails.js</code></td><td>223</td><td>Small drawings for the journal and the evidence list.</td></tr>
+  <tr><td><code>floorplan.js</code></td><td>24</td><td>The solid rectangles of every room (walls and furniture) used for collision, plus the map drawn in the journal.</td></tr>
+  <tr><td><code>renderer.js</code></td><td>352</td><td>Draws the scene and then runs the ink shader over it: outlines, paper grain, day and night light, the ink that closes in on a scene change.</td></tr>
+  <tr><td><code>sprites.js</code></td><td>157</td><td>Animated paper cut-out characters: sprite sheets, walking with collision, and a small cutscene runner.</td></tr>
+  <tr><td><code>stealth.js</code></td><td>586</td><td>The patrolling guards (sight, hearing, chasing, searching) and the things you can throw to distract them.</td></tr>
+  <tr><td><code>hands.js</code></td><td>715</td><td>The 19 hands-on puzzle views (drawer, lock, radio dials, torn paper and so on) and the white gloves drawn for hand tracking.</td></tr>
+  <tr><td><code>spatial.js</code></td><td>609</td><td>Webcam hand tracking: the camera, the hand model, and the engine that turns hand positions into a pointer, grabs and looks.</td></tr>
+  <tr><td><code>sound.js</code></td><td>254</td><td>All audio: recorded sounds, synthesised fallbacks, voice lines, music layers and the heartbeat.</td></tr>
+  <tr><td><code>cloud.js</code></td><td>178</td><td>Optional online features: accounts, cloud saves, the leaderboard.</td></tr>
+  <tr><td><code>systems.js</code></td><td>270</td><td>Self-checks that run at start-up, and a few older helpers.</td></tr>
+  <tr><td><code>fieldwork.js</code></td><td>27</td><td>Older 2D versions of three puzzles, kept for their answer-checking functions.</td></tr>
+</table>
+<p class="small">Outside <code>src/</code>: <code>build.mjs</code> (the build), <code>native/</code> (the Mac app host in Swift, and the Windows launcher), <code>tools/</code> (the tests), <code>supabase/</code> (the database definition), and <code>HANDOFF.md</code> (the long-form notes that this guide summarises).</p>
+
+<h2>3. What happens in one frame</h2>
+<p>The heart of the game is one function, <code>frame(now)</code> in <code>game.js</code>. The browser calls it before every picture it draws. Each call does these five jobs.</p>
+
+<div class="fig">
+<svg viewBox="0 0 720 118" xmlns="http://www.w3.org/2000/svg">
+  <rect class="n" x="6" y="22" width="122" height="74" rx="4"/><text class="tb" x="16" y="42">1 Read input</text><text class="ts" x="16" y="58">keys, mouse,</text><text class="ts" x="16" y="70">controller,</text><text class="ts" x="16" y="82">tracked hands</text>
+  <rect class="n" x="154" y="22" width="122" height="74" rx="4"/><text class="tb" x="164" y="42">2 Move</text><text class="ts" x="164" y="58">walk and look,</text><text class="ts" x="164" y="70">stopped by walls</text><text class="ts" x="164" y="82">and furniture</text>
+  <rect class="n" x="302" y="22" width="122" height="74" rx="4"/><text class="tb" x="312" y="42">3 Run the world</text><text class="ts" x="312" y="58">clock, guards,</text><text class="ts" x="312" y="70">puzzles, sounds,</text><text class="ts" x="312" y="82">story rules</text>
+  <rect class="n" x="450" y="22" width="122" height="74" rx="4"/><text class="tb" x="460" y="42">4 Animate</text><text class="ts" x="460" y="58">characters, props,</text><text class="ts" x="460" y="70">cutscene camera,</text><text class="ts" x="460" y="82">screen effects</text>
+  <rect class="a" x="598" y="22" width="116" height="74" rx="4"/><text class="tb" x="608" y="42">5 Draw</text><text class="ts" x="608" y="58">3D scene, then</text><text class="ts" x="608" y="70">the ink shader,</text><text class="ts" x="608" y="82">then the HUD</text>
+  <path class="l" d="M128 59H152"/><path class="l" d="M276 59H300"/><path class="l" d="M424 59H448"/><path class="l" d="M572 59H596"/>
+</svg>
+<div class="cap">Figure 2. The five jobs of every frame.</div>
+</div>
+
+<p>Everything that changes over time uses the time since the last frame, called <code>dt</code>. Walking, for example, moves the player by <i>speed times dt</i>. That makes the game run at the same pace on a 60 Hz laptop and a 240 Hz gaming screen: the faster screen simply gets more, smaller steps.</p>
+<p>The loop also protects weak computers. <code>keepPace()</code> watches the average frame time. If frames are slow for two seconds it draws the picture a little smaller (down to 60% of full size) and scales it up, and it steps back up when the machine recovers. A machine that keeps up never sees a change.</p>
+<pre><code>function keepPace(real) {
+  if (real &lt;= 0 || real &gt; .15 || document.hidden || inputMode === 'spatial') return;
+  // a running average of the frame time, in milliseconds
+  pace.avg += (real * 1000 - pace.avg) * .05; pace.t += real;
+  if (pace.t &lt; 2) return;                                      // decide once every two seconds
+  pace.t = 0;
+  const next = pace.avg &gt; 26 ? Math.max(.6, pace.scale - .1)   // slow: draw smaller
+             : pace.avg &lt; 12.5 ? Math.min(1, pace.scale + .1)  // fast again: draw bigger
+             : pace.scale;
+  if (next !== pace.scale) { pace.scale = next; resize(); }
+}</code></pre>
+
+<h2>4. The story rules and the save</h2>
+<p>The game always knows which <b>stage</b> of the story it is in. A stage decides who you are, what you can interact with, and what happens next. The list is in <code>campaign.js</code>:</p>
+<pre><code>const stages = ['contract','street','detective','memory','lock','recoverKey','closet',
+                'verify','board','gate','glass','radio','strip','end','gameOver'];</code></pre>
+
+<div class="fig">
+<svg viewBox="0 0 720 152" xmlns="http://www.w3.org/2000/svg">
+  <rect class="n" x="6" y="26" width="86" height="40" rx="4"/><text class="tb" x="14" y="43">contract</text><text class="ts" x="14" y="57">the rigged offer</text>
+  <rect class="n" x="110" y="26" width="86" height="40" rx="4"/><text class="tb" x="118" y="43">street</text><text class="ts" x="118" y="57">pound the glass</text>
+  <rect class="a" x="214" y="6" width="500" height="100" rx="5"/><text class="ts" x="224" y="19">repeated for each of the three cases</text>
+  <rect class="n" x="224" y="26" width="108" height="40" rx="4"/><text class="tb" x="232" y="43">detective</text><text class="ts" x="232" y="57">read a document</text>
+  <rect class="n" x="346" y="26" width="108" height="40" rx="4"/><text class="tb" x="354" y="43">memory</text><text class="ts" x="354" y="57">Mateo finds six leads</text>
+  <rect class="n" x="468" y="26" width="108" height="40" rx="4"/><text class="tb" x="476" y="43">lock, closet</text><text class="ts" x="476" y="57">cases 1 and 2 only</text>
+  <rect class="n" x="590" y="26" width="114" height="40" rx="4"/><text class="tb" x="598" y="43">verify</text><text class="ts" x="598" y="57">check the lead is true</text>
+  <rect class="n" x="468" y="72" width="108" height="28" rx="4"/><text class="tb" x="476" y="90">board</text>
+  <rect class="n" x="346" y="72" width="108" height="28" rx="4"/><text class="tb" x="354" y="90">gate</text>
+  <rect class="n" x="468" y="120" width="54" height="26" rx="4"/><text class="tb" x="476" y="137">glass</text>
+  <rect class="n" x="536" y="120" width="54" height="26" rx="4"/><text class="tb" x="544" y="137">radio</text>
+  <rect class="n" x="604" y="120" width="54" height="26" rx="4"/><text class="tb" x="612" y="137">strip</text>
+  <rect class="a" x="672" y="120" width="42" height="26" rx="4"/><text class="tb" x="680" y="137">end</text>
+  <path class="l" d="M92 46H108"/><path class="l" d="M196 46H222"/>
+  <path class="l" d="M332 46H344"/><path class="l" d="M454 46H466"/><path class="l" d="M576 46H588"/>
+  <path class="l" d="M647 66V86H578"/><path class="l" d="M468 86H456"/><path class="l" d="M346 86H278V68"/>
+  <path class="l" d="M495 100V118"/><path class="l" d="M522 133H534"/><path class="l" d="M590 133H602"/><path class="l" d="M658 133H670"/>
+  <text class="ts" x="6" y="128">"gate" is the work that opens the way to the next room; then the next case starts.</text>
+  <text class="ts" x="6" y="141">After the third case the board leads to the rescue instead: glass, radio, strip, end.</text>
+</svg>
+<div class="cap">Figure 3. The stages of the story.</div>
+</div>
+<p>Two details the figure simplifies. After Mateo's six leads, case 1 has the detective open a locked drawer (<code>lock</code>), case 2 has them fetch a key and open the supply closet (<code>recoverKey</code>, <code>closet</code>), and case 3 goes straight to <code>verify</code>. And from any case, losing every composure bulb puts the game in <code>gameOver</code>; Retry restarts that case with the evidence you had when it began.</p>
+
+<p>The rules themselves are short, plain functions that take the state and change it. They have no graphics in them, which is what makes them easy to test. Scoring is a good example. Every reward has a name, and a reward can only be given once:</p>
+<pre><code>export function grant(s, key, points) {
+  if (s.awards.includes(key)) return 0;      // already given: nothing happens
+  s.awards.push(key); s.score += points;
+  return points;
+}</code></pre>
+<p><code>casebook.js</code> holds the data those rules work on. Each lead says when it can be found and what must come first, for example <code>stamp: { shift: 'day', after: ['registration', 'ledger'], ... }</code>. <code>memoryTasks(state)</code> reads that table and returns the leads that are open right now, which is all the game needs to decide what you may interact with.</p>
+
+<h3>The clock</h3>
+<p>A full day is 96 seconds of play, so each day or night shift is 48 seconds (<code>shifts.js</code>). Some leads only show by day and some only at night. The same file gives the window guard his timetable.</p>
+
+<h3>Saving and loading</h3>
+<p><code>persist()</code> in <code>game.js</code> writes the state, plus where you are standing, into the browser's storage under the name <code>redacted-donor.case.v1</code>. Loading goes through <code>readRun()</code>, which trusts nothing: a save can come from another device or from a transfer code somebody else made, so every field the game uses is checked and repaired first.</p>
+<pre><code>function clean(s) {
+  ...
+  s.exhibits = ints(s.exhibits, i =&gt; !!evidence[i]);     // drop evidence that does not exist
+  s.links    = ints(s.links, i =&gt; !!cases[i]);            // drop cases that do not exist
+  s.gates    = Array.isArray(s.gates) ? [!!s.gates[0], !!s.gates[1]] : f.gates;
+  if (!['', 'terminal', 'keypad', 'shredder'].includes(s.gateStep)) s.gateStep = '';
+  ...
+}</code></pre>
+
+<h2>5. Drawing the world</h2>
+<h3>Rooms made from boxes</h3>
+<p><code>room.js</code> builds the clinic out of simple shapes. A helper called <code>box(x, y, z, width, height, depth, colour)</code> adds one block; <code>plane(texture, ...)</code> adds a flat painted surface. Thousands of these would be slow to draw one by one, so <code>bake()</code> merges every shape that shares a material into a single mesh. The fixed parts of a room are then drawn once per material instead of once per shape.</p>
+<p>Textures are painted by code on an HTML canvas when the game starts (<code>InkTextureFactory.make()</code>): floorboards, striped wallpaper, forms, tags. Nothing is downloaded.</p>
+
+<h3>Normal maps on walls and floor</h3>
+<p>A <b>normal map</b> is a second texture that records which way each tiny patch of a surface leans. With it, a flat wall can catch light as if its mouldings were really raised. <code>relief()</code> works one out from the painted texture itself: darker paint is treated as lower, and the slope between neighbouring pixels gives the lean.</p>
+<p>The walls and floor are unlit (their colours are exactly what was painted), so the normal map is used in a careful way. A few lines added to their shader brighten or darken each pixel by how far it leans toward the window:</p>
+<pre><code>// the lean stored in the normal map, as a direction
+vec3 m = texture2D(reliefMap, vMapUv).xyz * 2.0 - 1.0;
+// brighten or darken the painted colour by how far that direction points at the light
+diffuseColor.rgb *= clamp(1.0 + 1.15 * dot((T*m.x + B*m.y) * inv, reliefLight), 0.5, 1.5);</code></pre>
+<p>A flat pixel has no lean, so it is multiplied by exactly 1 and keeps its colour. Only board gaps, panel edges and grain gain light and shadow.</p>
+
+<h3>The ink look</h3>
+<p><code>renderer.js</code> draws in two steps. First the 3D scene is drawn into an off-screen picture, along with a <b>depth</b> picture that records how far away each pixel is. Then one large shader, the ink pass, turns that into the final image. It finds edges by looking for sudden jumps in depth and draws dark outlines there, adds paper grain, tints the scene for day or night, adds sunbeams and dust, and, during a scene change, lets black ink close in from the edges and drip from the top.</p>
+<p>Two details are worth knowing:</p>
+<ul>
+  <li><b>Puzzles are drawn on top.</b> An open puzzle is drawn in its own pass and laid over the room, so a desk or a wall can never poke through it (<code>setOverlay()</code>).</li>
+  <li><b>Resolution is capped.</b> The picture is never drawn larger than about 1600 by 1000 pixels, and <code>keepPace()</code> can lower it further on a slow machine.</li>
+</ul>
+<p class="small">Measured on an Apple silicon Mac at 1280 by 800 with the frame limit off: 2.7 to 4.4 ms a frame, 30 to 264 draw calls. The lab is the heaviest room.</p>
+
+<h2>6. Characters and guards</h2>
+<h3>Paper cut-outs that move</h3>
+<p>The recruiter, the enforcer, the guards and the orderly are flat drawings that always turn to face the camera, like paper puppets standing in a 3D room. <code>sprites.js</code> animates them without any new artwork. Each character's original drawing function takes a <b>pose</b> (how far the body bounces and leans, where the legs are in the stride, how the head tilts) and bends its own drawing to match.</p>
+<ul>
+  <li><code>makeSheet()</code> paints a <b>sprite sheet</b> once: 20 small pictures of the character (2 idle, 6 walking, 6 running, 4 interacting, 2 looking).</li>
+  <li><code>SpriteSheetAnimator</code> shows one of them at a time by sliding the texture, 12 pictures a second whatever the frame rate, which gives the hand-drawn feel.</li>
+  <li><code>Actor</code> adds a body: it walks to a list of points and cannot pass through furniture, because each step is checked against the rectangles in <code>floorplan.js</code>.</li>
+  <li><code>Cutscene</code> runs steps in order: walk here, wait, act, turn. The opening scene in <code>props.js</code> is written this way.</li>
+</ul>
+
+<h3>Guards</h3>
+<p><code>stealth.js</code> runs the guards who patrol the lab and the dispatch office. Each guard is always in one <b>mode</b>: walking his route, pausing to look around, going to check a noise, chasing, searching, or returning. The rules that move him between modes are what make him feel alert:</p>
+<table>
+  <thead><tr><th style="width:26%">He notices you when</th><th>How it works</th></tr></thead>
+  <tr><td>He sees you</td><td>You are inside his sight cone (45 degrees to each side, 4 m by day, 3.5 m at night), nothing tall is between you, and you are not crouched behind cover.</td></tr>
+  <tr><td>He hears you</td><td>Walking carries 1.7 m and running 4.5 m. Crouching or standing still is silent, and the crepe soles from the shop halve both distances.</td></tr>
+  <tr><td>You are too close</td><td>Within 1.1 m he senses you whichever way he faces.</td></tr>
+  <tr><td>Another guard calls</td><td>A guard who spots you alerts the others within 10 m.</td></tr>
+</table>
+<p>Once he has seen you he chases, runs on to where he last saw you, searches there, and stays wary for a while. Throwing something (a beaker, a ledger) makes a crash that pulls the nearest guard away. All the numbers are named constants at the top of the file, so they are easy to tune.</p>
+
+<h2>7. Hands-on puzzles</h2>
+<p>Every interaction in the game is something you do with your hands rather than a button you press: you pull a drawer, turn the wheels of a padlock, piece a torn card together, sweep a UV lamp across glass. <code>hands.js</code> contains 19 such views.</p>
+<p>They all work the same way. When you interact with something, <code>tactileFor(id)</code> in <code>game.js</code> looks up which view to open and with what options. <code>openHands()</code> moves the camera in and builds a small 3D board in front of the object. Each view is a function that adds shapes to that board and says how they respond to being grabbed:</p>
+<pre><code>r.grab(handle, {
+  down: (p) =&gt; { y0 = p.y; o0 = open; },                     // remember where the pull started
+  move: (p) =&gt; {
+    if (r.finished) return;
+    open = clamp(o0 + (p.y - y0) / 150, 0, 1); apply();      // the drawer follows the hand
+    r.sfx('screech', open);                                  // and squeals as it moves
+  },
+  up: letGo,                                                 // far enough open? then it is done
+});</code></pre>
+<p>Positions are in "board units": the board is 560 units wide and 320 tall. Mouse, controller and tracked hands all arrive as the same three events (down, move, up), so a puzzle is written once and works with every input. When a view calls <code>r.finish()</code>, the game runs whatever that interaction unlocks in the story.</p>
+
+<h2>8. Hand tracking</h2>
+<p>With hand tracking on, the game watches your hand through the webcam. Closing your hand grabs, opening it lets go, moving it toward a screen edge turns your head. The picture never leaves the computer. All of this is in <code>spatial.js</code>, and it is the most intricate part of the project, so this section goes step by step.</p>
+
+<div class="fig">
+<svg viewBox="0 0 720 176" xmlns="http://www.w3.org/2000/svg">
+  <rect class="g" x="6" y="18" width="94" height="58" rx="4"/><text class="tb" x="14" y="38">Camera</text><text class="ts" x="14" y="53">30 or 60</text><text class="ts" x="14" y="65">pictures a second</text>
+  <rect class="a" x="122" y="18" width="118" height="58" rx="4"/><text class="tb" x="130" y="38">Hand model</text><text class="ts" x="130" y="53">MediaPipe, on a</text><text class="ts" x="130" y="65">background thread</text>
+  <rect class="n" x="262" y="18" width="104" height="58" rx="4"/><text class="tb" x="270" y="38">Track</text><text class="ts" x="270" y="53">steadies one hand,</text><text class="ts" x="270" y="65">reads its gestures</text>
+  <rect class="n" x="388" y="18" width="112" height="58" rx="4"/><text class="tb" x="396" y="38">Gestures</text><text class="ts" x="396" y="53">which hand points,</text><text class="ts" x="396" y="65">pointer, grab, look</text>
+  <rect class="n" x="522" y="18" width="82" height="58" rx="4"/><text class="tb" x="530" y="38">Glide</text><text class="ts" x="530" y="53">smooth between</text><text class="ts" x="530" y="65">pictures</text>
+  <rect class="g" x="626" y="18" width="88" height="58" rx="4"/><text class="tb" x="634" y="38">The game</text><text class="ts" x="634" y="53">pointerInput()</text><text class="ts" x="634" y="65">in game.js</text>
+  <path class="l" d="M100 47H120"/><path class="l" d="M240 47H260"/><path class="l" d="M366 47H386"/><path class="l" d="M500 47H520"/><path class="l" d="M604 47H624"/>
+  <text class="ts" x="122" y="96">21 points per hand</text><text class="ts" x="122" y="108">(wrist, knuckles, fingertips)</text>
+  <text class="ts" x="262" y="96">filters, pinch, grip,</text><text class="ts" x="262" y="108">fist, push speed</text>
+  <text class="ts" x="388" y="96">touching hands, grab and</text><text class="ts" x="388" y="108">release points, wrist turn</text>
+  <text class="ts" x="522" y="96">every drawn frame</text><text class="ts" x="522" y="108">gets a position</text>
+  <rect class="g" x="122" y="126" width="244" height="40" rx="4"/><text class="ts" x="130" y="142">If the background thread is unavailable or slower,</text><text class="ts" x="130" y="155">the model runs on the game's own thread instead.</text>
+  <rect class="g" x="388" y="126" width="326" height="40" rx="4"/><text class="ts" x="396" y="142">Calibration (the four-step setup) measures one player's hand</text><text class="ts" x="396" y="155">and stores the thresholds used by Track and Gestures.</text>
+</svg>
+<div class="cap">Figure 4. From the camera to the game.</div>
+</div>
+
+<h3>Step 1: finding the hand</h3>
+<p>Google's <b>MediaPipe</b> hand model looks at each camera picture and returns 21 points for every hand it finds. Reading one picture takes 10 to 25 ms, which would make the game stutter if it ran in the game's own loop. So by default it runs in a <b>worker</b>, a second thread: the game hands it one picture, carries on drawing, and collects the answer when it is ready. If a browser cannot run the model that way, or it turns out slower there, the game switches by itself to running it in the main loop, and Pause lets the player choose.</p>
+<p>The model's own files (its code, a WebAssembly program and the trained model, about 17.6 MB together) are packed into <code>hand-tracking.js</code> beside the game, so tracking starts in under a second and needs no internet.</p>
+
+<h3>Step 2: steadying the points</h3>
+<p>Raw points jitter. Each coordinate goes through a <b>One-Euro filter</b>, which smooths heavily while the hand is still and hardly at all while it moves fast, so the pointer is both steady and quick:</p>
+<pre><code>filter(x, t, k = 1) {
+  ...
+  // how fast is it moving?
+  this.dx += alpha(this.dCut) * ((x - this.x) / dt - this.dx);
+  // the faster it moves, the less it is smoothed
+  this.x  += alpha(this.minCut + this.beta * k * Math.abs(this.dx)) * (x - this.x);
+  return this.x;
+}</code></pre>
+
+<h3>Step 3: reading gestures</h3>
+<p>The <code>Track</code> class follows one hand and measures it in ways that do not depend on how far it is from the camera, by dividing every distance by the length of the palm. A pinch is the thumb tip close to the index tip. A grip is the four fingertips, on average, close to the wrist. A knock is a fist growing quickly in the picture, which means it is coming toward the camera.</p>
+<p>Each gesture switches on and off through a <code>Latch</code>, which needs the condition to hold for a moment and uses a tighter threshold to engage than to release. That stops a trembling hand from flickering between grabbed and not grabbed.</p>
+
+<h3>Step 4: making sense of two hands</h3>
+<p>The <code>Gestures</code> class decides which hand is the pointing hand and keeps it that way even when the model's left and right labels flicker. It also guards against the cases a camera model handles badly:</p>
+<table>
+  <thead><tr><th style="width:30%">Situation</th><th>What the engine does</th></tr></thead>
+  <tr><td>Hands touch or overlap (a clap)</td><td>Nothing is trusted: the pointer holds still, a grab lets go, and no knock fires. When the hands part, they are told apart afresh.</td></tr>
+  <tr><td>The model reports one hand twice</td><td>It is treated as one hand, because two real hands cannot arrive on the same spot without having been seen approaching.</td></tr>
+  <tr><td>A second hand rests in view, curled</td><td>It does not block the first hand from grabbing. Two closed hands only mean "turn this" when something can be turned.</td></tr>
+  <tr><td>The hand moves too fast to read</td><td>No grab starts on a blurred hand. One already held is kept, even if the hand vanishes for up to 0.45 s.</td></tr>
+  <tr><td>Fingers close or open</td><td>The palm slides a little as they do. If the hand was at rest, the grab or release lands where it was holding still.</td></tr>
+</table>
+
+<h3>Step 5: from hand position to screen position</h3>
+<p>The pointer follows the centre of the palm, which stays put when the fingers close. The four-step setup records where your hand rests and how far it reaches, and that area is stretched to cover the whole screen. Because the camera, the model and the filters all run a little behind the real hand, the pointer is run slightly ahead of it, but never past where the hand has been seen to be, so it cannot overshoot a hand that stops.</p>
+
+<h3>Step 6: gliding between pictures</h3>
+<p>The camera gives 30 or 60 pictures a second, but a gaming screen draws 144 or 240. Without help the pointer would move in visible steps. The <code>Glide</code> class fills the gaps: between pictures it carries the pointer on at the speed it was last seen moving, and blends each new picture in over a few frames.</p>
+<pre><code>run(now) {     // where the last picture's pointer has got to by now
+  const dt = Math.min(Math.max(0, now - this.since), 45) / 1000, m = this.m;   // 45 ms at most
+  return { x: this.p.x + (m ? m.vx * dt : 0), y: this.p.y + (m ? m.vy * dt : 0) };
+}</code></pre>
+<p class="small">Measured with a real photo of two hands fed in as the camera: both hands found at 30 pictures a second, the pointer moved on every drawn frame, and the game kept 60 frames a second with the background thread against about 50 without it.</p>
+
+<h3>Step 7: what the game does with it</h3>
+<p><code>pointerInput(frame)</code> in <code>game.js</code> receives the result on every frame. Over a menu, a grab is a click. In a puzzle, a grab is a mouse press at the pointer, a turn of the wrist turns a dial, and a fist pushed at the camera breaks glass. In the room, a grab is the interact key, and moving the hand past its comfort zone turns the view. A controller's stick uses the very same function, which is why controller support needed so little code.</p>
+
+<h2>9. Sound and voice</h2>
+<p><code>sound.js</code> uses the browser's WebAudio system. Sounds come from two places. Recorded files in <code>src/audio/</code> are embedded in the page by the build; when you press Begin they are unpacked one at a time, smallest first, so clicks and the first voice lines are ready at once. If a recording is missing, the same cue is <b>synthesised</b>: a short burst of filtered noise for a footstep, a falling tone for a latch.</p>
+<ul>
+  <li><code>play(name, volume)</code> plays a recorded sound; several takes of the same name (<code>clink</code>, <code>clink-1</code>) are chosen at random.</li>
+  <li><code>say(...ids)</code> plays voice lines one after another, and a new line cuts the old one short, so two never talk over each other. There are 54 recorded lines.</li>
+  <li><code>jazz(on)</code>, <code>tension(on)</code> and the ambience are long loops that fade in and out. Jazz plays for the detective, the tension track when a guard has seen you.</li>
+  <li>The heartbeat is driven by one number, <code>pulse</code>, which <code>game.js</code> works out each frame: 0 when you are safe, rising to 1 as a guard nears, notices you and closes in. It sets both how fast and how loud the beats are.</li>
+</ul>
+<p>Subtitles and speech stay in step because the game speaks by text: <code>speak(text)</code> looks for a known phrase in the line being shown and plays the matching recording.</p>
+
+<h2>10. Online records and security</h2>
+<p>The game is fully playable offline. <code>cloud.js</code> adds three optional things through a hosted database (Supabase): an account, a copy of your save, and a leaderboard. The game never waits for the network: results go into a local queue and are sent when a connection is there.</p>
+<p>The database does not trust the game either. Its tables cannot be written directly; every change goes through a database function that checks who is asking and whether the request is plausible (<code>supabase/schema.sql</code>).</p>
+<h3>Protections in the page itself</h3>
+<ul>
+  <li><b>Page policy.</b> The build writes a Content-Security-Policy into the page. The browser will only run the script the build produced (matched by a fingerprint) and the hand-tracking files, so text typed by other players can never run as code.</li>
+  <li><b>Escaping.</b> Any text that came from outside (a leaderboard name, an email) passes through <code>esc()</code> before it is shown.</li>
+  <li><b>Save checking.</b> Described in section 4: a damaged or hostile save is repaired or refused, never trusted.</li>
+  <li><b>Camera.</b> Hand tracking is off until you turn it on. Pictures are read on the device and never stored or sent. The Mac app grants the camera only to the game's own page.</li>
+</ul>
+
+<h2>11. Building, packaging and testing</h2>
+<table>
+  <thead><tr><th style="width:34%">Command</th><th>What it does</th></tr></thead>
+  <tr><td><code>npm install</code></td><td>Fetches Three.js, esbuild and the hand-tracking library.</td></tr>
+  <tr><td><code>npm run build</code></td><td>Writes <code>index.html</code> and <code>hand-tracking.js</code>.</td></tr>
+  <tr><td><code>npm run build:mac</code></td><td>Builds, then compiles the small Swift host and packages <code>The Redacted Donor.app</code>.</td></tr>
+  <tr><td><code>npm run build:win</code></td><td>Builds, then makes the Windows folder and zip: the game, <code>hand-tracking.js</code>, a launcher that opens it in Edge or Chrome, and a readme.</td></tr>
+  <tr><td><code>npm start</code></td><td>Serves the folder on <code>localhost:4173</code> for testing.</td></tr>
+</table>
+<h3>Tests</h3>
+<p>Three sets of tests guard the parts where a mistake is hardest to see.</p>
+<table>
+  <thead><tr><th style="width:38%">Test</th><th>What it checks</th></tr></thead>
+  <tr><td><code>node tools/spatial.test.mjs</code><br>32 tests, no browser</td><td>The hand engine, using made-up hands: filters, pinch and grip, a scripted clap, grab and release points, the glide at 240 Hz, the setup wizard.</td></tr>
+  <tr><td><code>node tools/save.test.mjs</code></td><td>That any save, including a hostile one, loads safely; that a lead finished just after the shift turns still counts; that the two essential tools can always be bought.</td></tr>
+  <tr><td><code>node tools/spatial-browser.test.mjs</code><br>60 checks in real Chrome</td><td>The whole game driven by scripted hands, keys and a scripted controller: setup, tutorial, puzzles, menus, the holding cell, switching hand tracking on and off, both tracking engines.</td></tr>
+</table>
+<p class="small">The browser tests need <code>playwright-core</code> (<code>npm install --no-save playwright-core</code>) and the local server running. Run them with <code>GPU=1 INK_TOOLCHAIN="$PWD"</code>.</p>
+
+<h2>12. Where to change things</h2>
+<table>
+  <thead><tr><th style="width:36%">To change</th><th>Look in</th></tr></thead>
+  <tr><td>The story text, leads, evidence, shop prices</td><td><code>casebook.js</code></td></tr>
+  <tr><td>Add something to search for points</td><td>Add an entry to <code>curios</code> in <code>casebook.js</code> with its position, name and text. The journal and the map pick it up by themselves.</td></tr>
+  <tr><td>Which puzzle an object opens</td><td><code>tactileFor()</code> in <code>game.js</code></td></tr>
+  <tr><td>A puzzle's behaviour</td><td>Its function in <code>hands.js</code> (for example <code>tumbler</code>, <code>dials</code>, <code>torn</code>)</td></tr>
+  <tr><td>Guard speed, sight, hearing</td><td>The constants at the top of <code>stealth.js</code>; routes are in <code>createStealth({ routes })</code> in <code>game.js</code></td></tr>
+  <tr><td>Walls and furniture that block movement</td><td><code>floorplan.js</code></td></tr>
+  <tr><td>Furniture and props</td><td><code>props.js</code> (intake office), <code>annex.js</code> (lab, dispatch, holding cell), <code>models.js</code> (shared pieces)</td></tr>
+  <tr><td>The ink look, outlines, day and night colours</td><td>The fragment shader in <code>renderer.js</code></td></tr>
+  <tr><td>How strong the wall and floor relief is</td><td><code>relief()</code> and <code>sheetMaterial()</code> in <code>room.js</code></td></tr>
+  <tr><td>A sound effect</td><td>Drop <code>name.mp3</code> into <code>src/audio/</code> and rebuild; it replaces the synthesised cue of that name</td></tr>
+  <tr><td>A voice line</td><td>Save it as <code>src/audio/voice/&lt;id&gt;.mp3</code> (ids are in <code>VOICELINES.md</code>) and add its phrase to <code>VOICE</code> in <code>game.js</code></td></tr>
+  <tr><td>Hand tracking feel</td><td>The named constants at the top of <code>spatial.js</code> (<code>LOOK_DEAD</code>, <code>FAST</code>, <code>TOUCH</code>, <code>LEAD</code>), and the look speed in Pause</td></tr>
+  <tr><td>Quiz questions and debrief cards</td><td><code>debrief.js</code></td></tr>
+  <tr><td>Keys and controller buttons</td><td>The <code>keydown</code> handler and <code>PAD_KEYS</code> in <code>game.js</code>; the Controls page is <code>controls()</code></td></tr>
+</table>
+
+<div class="box"><b>One rule that keeps the project healthy.</b> The story rules (<code>campaign.js</code>, <code>casebook.js</code>, <code>shifts.js</code>) never touch graphics, and the graphics never decide the story. If you keep new code on the right side of that line, the tests keep working and a change in one place does not break another.</div>
+
+<p class="small">Written from the source as it stood on 15 November 2026. Line counts and test counts are from that date. <code>HANDOFF.md</code> in the project has the full detail behind every section.</p>
+
+</body>
+</html>

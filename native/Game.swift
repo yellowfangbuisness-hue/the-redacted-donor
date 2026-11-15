@@ -13,8 +13,16 @@ struct RedactedDonor {
     }
 }
 
+// A key the page does not consume comes back up the responder chain, and AppKit's answer is the alert sound.
+// A game holds keys down (and through menus and cutscenes), so the window stays quiet instead.
+final class QuietWindow: NSWindow {
+    override func noResponder(for eventSelector: Selector) {
+        if eventSelector != #selector(NSResponder.keyDown(with:)) { super.noResponder(for: eventSelector) }
+    }
+}
+
 @MainActor
-final class GameWindow: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMessageHandler, WKNavigationDelegate {
+final class GameWindow: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
     private var window: NSWindow!
     private var view: WKWebView!
     private var mouseMonitor: Any?
@@ -22,13 +30,15 @@ final class GameWindow: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScr
     private var delta = CGPoint.zero
     private var queued = false
     private var gameURL: URL!
+    // The only sites the debrief may open, in the player's own browser.
+    private static let sources: Set<String> = ["www.declarationofistanbul.org", "www.unodc.org", "www.who.int", "notto.mohfw.gov.in", "doi.org"]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let config = WKWebViewConfiguration()
         config.userContentController.add(self, name: "gameMouse")
         let frame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         let size = NSMakeRect(0, 0, min(1440, frame.width * 0.92), min(880, frame.height * 0.90))
-        window = NSWindow(contentRect: size, styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
+        window = QuietWindow(contentRect: size, styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "The Redacted Donor"
         window.backgroundColor = NSColor(calibratedRed: 0.09, green: 0.07, blue: 0.05, alpha: 1)
         window.titlebarAppearsTransparent = true
@@ -38,6 +48,7 @@ final class GameWindow: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScr
         window.delegate = self
         view = WKWebView(frame: size, configuration: config)
         view.navigationDelegate = self
+        view.uiDelegate = self
         view.allowsMagnification = false
         window.contentView = view
         window.center()
@@ -53,7 +64,8 @@ final class GameWindow: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScr
         NSApp.mainMenu = bar
         gameURL = Bundle.main.url(forResource: "index", withExtension: "html")
         guard let gameURL else { NSApp.terminate(nil); return }
-        view.loadFileURL(gameURL, allowingReadAccessTo: gameURL)
+        // The folder, not just the page: hand-tracking.js sits beside it.
+        view.loadFileURL(gameURL, allowingReadAccessTo: gameURL.deletingLastPathComponent())
         NSApp.activate(ignoringOtherApps: true)
         mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] event in
             guard let self, self.captured, event.window === self.window else { return event }
@@ -95,8 +107,12 @@ final class GameWindow: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScr
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let resource = navigationAction.request.url else { decisionHandler(.cancel); return }
         if resource.standardizedFileURL == gameURL.standardizedFileURL { decisionHandler(.allow); return }
-        if navigationAction.navigationType == .linkActivated, resource.scheme == "https", resource.host == "www.declarationofistanbul.org" { NSWorkspace.shared.open(resource) }
+        if navigationAction.navigationType == .linkActivated, resource.scheme == "https", GameWindow.sources.contains(resource.host ?? "") { NSWorkspace.shared.open(resource) }
         decisionHandler(.cancel)
+    }
+    // Hand tracking: only the bundled game page may use the camera, never the microphone. macOS still asks the player the first time.
+    func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+        decisionHandler(frame.isMainFrame && origin.protocol == "file" && frame.request.url?.standardizedFileURL == gameURL.standardizedFileURL && type == .camera ? .grant : .deny)
     }
     func windowDidResignKey(_ notification: Notification) { setCapture(false) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

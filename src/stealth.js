@@ -1,17 +1,23 @@
 import * as THREE from 'three';
+import { SpriteSheetAnimator } from './sprites.js';
 
 // Patrolling guards with floor sight cones, plus throwable distractions.
 // Units are metres, Y is up. Footprints are axis-aligned [minX, maxX, minZ, maxZ].
 // Heading convention: a heading h faces the (x, z) direction (sin h, cos h).
 
-const WALK_SPEED = .95;
-// Chase: once a guard sees the player he leaves his route and closes in; he gives up after losing sight.
-const CHASE_SPEED = 1.7, LOSE_TIME = 1.5, CATCH_DIST = .8;
+const WALK_SPEED = 1.05;
+// Chase: once a guard sees the player he leaves his route and closes in; when he loses sight he runs on to where he
+// last saw them and searches there. Guards also hear footsteps, sense someone standing right beside them, stay wary
+// after a sighting and call each other. Veteran mode keeps the older, gentler guards.
+const CHASE_SPEED = 2.2, LOSE_TIME = 3, CATCH_DIST = .8;   // a chasing guard keeps pace with a walking player and runs on to where he last saw them
+const SENSE_DIST = 1.1;      // this close, a standing player is noticed whichever way the guard faces
+const WARY_TIME = 25, WARY_RANGE = 1.2;   // after a sighting he stays on edge for a while and sees further
+const CALL_DIST = 10;        // a guard who spots the player calls the others within this distance
 const VETERAN_SPEED = .7;
 const PAUSE_TIME = 1.2;
-const PAUSE_SWEEP = .6;
+const PAUSE_SWEEP = 1.05;
 const TURN_RATE = 3.6;
-const HALF_ANGLE = .6;
+const HALF_ANGLE = .78;
 const RANGE_DAY = 4.0;
 const RANGE_NIGHT = 3.5;
 const SOLES_FACTOR = .8;
@@ -22,7 +28,6 @@ const DECAY = .6;
 const DISTRACT_RADIUS = 9;
 const STOP_SHORT = .6;
 const GUARD_RADIUS = .22;
-const GUARD_W = 1.0;
 const GUARD_H = 2.05;
 const CONE_COLOR = '#efbc71';
 const CONE_ALERT = '#ea8a55';
@@ -71,7 +76,7 @@ function pointBlocked(x, z, rects, pad) {
   return false;
 }
 
-export function createStealth({ scene, guardTexture, footprints = [], tallFootprints = [], routes = {}, throwables = [], onCrash } = {}) {
+export function createStealth({ scene, guardSheet, footprints = [], tallFootprints = [], routes = {}, throwables = [], onCrash } = {}) {
   const root = new THREE.Group();
   root.name = 'stealth';
   scene.add(root);
@@ -81,9 +86,6 @@ export function createStealth({ scene, guardTexture, footprints = [], tallFootpr
   const own = (list, item) => { list.push(item); return item; };
 
   // ---------- Guards ----------
-  const guardGeo = own(geometries, new THREE.PlaneGeometry(GUARD_W, GUARD_H));
-  guardGeo.translate(0, GUARD_H / 2, 0);
-  const guardMat = own(materials, new THREE.MeshBasicMaterial({ map: guardTexture || null, transparent: true, alphaTest: .05, side: THREE.DoubleSide }));
 
   const coneShape = new THREE.Shape();
   coneShape.moveTo(0, 0);
@@ -98,8 +100,7 @@ export function createStealth({ scene, guardTexture, footprints = [], tallFootpr
   for (const key of Object.keys(routes)) {
     const route = routes[key];
     if (!Array.isArray(route) || route.length < 2) continue;
-    const sprite = new THREE.Mesh(guardGeo, guardMat);
-    sprite.renderOrder = 2;
+    const anim = new SpriteSheetAnimator(guardSheet, { height: GUARD_H, width: 1 }), sprite = anim.mesh;   // the guard cut-out, animated: walks, runs, stops and looks
     const coneMat = own(materials, new THREE.MeshBasicMaterial({ color: CONE_COLOR, transparent: true, opacity: CONE_OPACITY, depthWrite: false, side: THREE.DoubleSide }));
     const cone = new THREE.Mesh(coneGeo, coneMat);
     cone.rotation.order = 'YXZ';
@@ -109,7 +110,7 @@ export function createStealth({ scene, guardTexture, footprints = [], tallFootpr
     root.add(sprite, cone);
     const [x0, z0] = route[0], [x1, z1] = route[1];
     guards.push({
-      key, route, sprite, cone, coneMat,
+      key, route, sprite, anim, cone, coneMat,
       x: x0, z: z0, heading: Math.atan2(x1 - x0, z1 - z0),
       wp: 1, mode: 'walk', timer: 0, base: 0,
       tx: x1, tz: z1, lookX: 0, lookZ: 0, searchFor: 0, stuck: 0, ghost: false, dir: 1, pauseFor: PAUSE_TIME,
@@ -133,20 +134,29 @@ export function createStealth({ scene, guardTexture, footprints = [], tallFootpr
   rimGeo.translate(0, .11, 0);
   const rimMat = own(materials, new THREE.MeshBasicMaterial({ color: '#eef7f4', transparent: true, opacity: .85 }));
 
+  // Everything else is a few lit parts. Each kind: how to build it, the height of its middle, and whether it breaks on landing.
+  const solid = (geo, col) => new THREE.Mesh(own(geometries, geo), own(materials, new THREE.MeshLambertMaterial({ color: col })));
+  const at = (m, x, y, z, rx = 0) => { m.position.set(x, y, z); m.rotation.x = rx; return m; };
+  const KINDS = {
+    beaker: { centre: .055, breaks: true, build: (g) => g.add(new THREE.Mesh(glassGeo, glassMat), new THREE.Mesh(glassBaseGeo, glassMat), new THREE.Mesh(rimGeo, rimMat)) },
+    paperweight: { centre: .03, build: (g) => { const dome = new THREE.Mesh(brassGeo, brassMat); dome.scale.y = .75; g.add(dome, new THREE.Mesh(brassBaseGeo, brassMat)); } },
+    // Brown medicine bottle with a paper label and a cork.
+    bottle: { centre: .06, breaks: true, build: (g) => g.add(at(solid(new THREE.CylinderGeometry(.032, .034, .1, 14), '#6e4a2a'), 0, .05, 0), at(solid(new THREE.CylinderGeometry(.013, .02, .035, 12), '#6e4a2a'), 0, .117, 0), at(solid(new THREE.CylinderGeometry(.012, .012, .016, 10), '#c9a46a'), 0, .14, 0), at(solid(new THREE.CylinderGeometry(.037, .037, .045, 14, 1, true), '#e3d6b4'), 0, .05, 0)) },
+    // Chipped enamel mug: white body, dark rim, a loop handle.
+    mug: { centre: .04, build: (g) => g.add(at(solid(new THREE.CylinderGeometry(.04, .036, .08, 16), '#e3dccb'), 0, .04, 0), at(solid(new THREE.TorusGeometry(.04, .004, 6, 20), '#25303b'), 0, .08, 0, Math.PI / 2), at(solid(new THREE.TorusGeometry(.022, .006, 6, 12, Math.PI).rotateZ(-Math.PI / 2), '#e3dccb'), .04, .04, 0)) },
+    // Heavy glass ashtray: it clinks but does not break.
+    ashtray: { centre: .012, build: (g) => g.add(at(new THREE.Mesh(own(geometries, new THREE.CylinderGeometry(.06, .055, .022, 18)), glassMat), 0, .011, 0), at(new THREE.Mesh(own(geometries, new THREE.TorusGeometry(.058, .005, 6, 22)), rimMat), 0, .022, 0, Math.PI / 2)) },
+    // Cloth-bound ledger.
+    ledger: { centre: .02, build: (g) => g.add(at(solid(new THREE.BoxGeometry(.2, .036, .145), '#5a2e24'), 0, .018, 0), at(solid(new THREE.BoxGeometry(.19, .028, .136), '#e9dfc5'), .009, .018, 0)) },
+  };
   const items = [];
   for (const t of throwables) {
-    const g = new THREE.Group();
-    if (t.kind === 'beaker') {
-      g.add(new THREE.Mesh(glassGeo, glassMat), new THREE.Mesh(glassBaseGeo, glassMat), new THREE.Mesh(rimGeo, rimMat));
-    } else {
-      const dome = new THREE.Mesh(brassGeo, brassMat);
-      dome.scale.y = .75;
-      g.add(dome, new THREE.Mesh(brassBaseGeo, brassMat));
-    }
+    const kind = KINDS[t.kind] ? t.kind : 'paperweight', g = new THREE.Group();
+    KINDS[kind].build(g);
     const [x, y, z] = t.pos || [0, 0, 0];
-    g.position.set(x, y, z);
+    g.position.set(x, y, z); g.rotation.y = t.ry || 0;
     root.add(g);
-    items.push({ id: t.id, kind: t.kind === 'beaker' ? 'beaker' : 'paperweight', mesh: g, state: 'world', p: new THREE.Vector3(x, y, z), v: new THREE.Vector3(), centre: t.kind === 'beaker' ? .055 : .03 });
+    items.push({ id: t.id, kind, mesh: g, state: 'world', p: new THREE.Vector3(x, y, z), v: new THREE.Vector3(), centre: KINDS[kind].centre, home: new THREE.Vector3(x, y, z), ry: t.ry || 0 });
   }
   let heldItem = null;
 
@@ -265,7 +275,7 @@ export function createStealth({ scene, guardTexture, footprints = [], tallFootpr
         g.tx = g.lastX; g.tz = g.lastZ;
         g.lostT += dt; // reset each frame he still sees the player
         walkTo(g, dt, speed * CHASE_SPEED, true);
-        if (g.lostT > LOSE_TIME || g.stuck > 1.5) { g.mode = 'search'; g.timer = 0; g.searchFor = 4; g.base = g.heading; g.stuck = 0; }
+        if (g.lostT > LOSE_TIME || g.stuck > 1.5) { g.mode = 'search'; g.timer = 0; g.searchFor = veteranNow ? 4 : 7; g.base = g.heading; g.stuck = 0; }
         break;
       case 'return':
         if (walkTo(g, dt, speed, !g.ghost)) { g.mode = 'pause'; g.timer = 0; g.base = g.heading; g.ghost = false; }
@@ -275,13 +285,11 @@ export function createStealth({ scene, guardTexture, footprints = [], tallFootpr
   }
 
   function placeGuard(g, dt, camera, range, jammed) {
-    if (g.moving) g.phase += dt * 7.5;
-    const bob = g.moving ? Math.abs(Math.sin(g.phase)) * .035 : 0;
-    g.sprite.position.set(g.x, bob, g.z);
-    if (camera) {
-      camera.getWorldPosition(camPos);
-      g.sprite.rotation.set(0, Math.atan2(camPos.x - g.x, camPos.z - g.z), g.moving ? Math.sin(g.phase) * .018 : 0);
-    }
+    g.sprite.position.set(g.x, 0, g.z);
+    // Chasing he runs, on patrol he walks, searching he stops with a hand at his brow; the view and its left-right
+    // flip follow from which way he is heading relative to the camera.
+    g.anim.play(g.mode === 'chase' && g.moving ? 'run' : g.moving ? 'walk' : g.mode === 'search' ? 'look' : 'idle');
+    g.anim.update(dt, camera || null, g.heading);
     g.cone.position.set(g.x, .018, g.z);
     g.cone.rotation.y = g.heading - Math.PI / 2;
     g.cone.scale.set(range, range, 1);
@@ -292,7 +300,8 @@ export function createStealth({ scene, guardTexture, footprints = [], tallFootpr
   function canSee(g, px, pz, range, crouched) {
     const dx = px - g.x, dz = pz - g.z, d = Math.hypot(dx, dz);
     if (d > range) return false;
-    if (d > .15 && Math.abs(wrap(Math.atan2(dx, dz) - g.heading)) > HALF_ANGLE) return false;
+    const near = d < SENSE_DIST && !crouched && !veteranNow;   // right beside him: he senses you unless you stay low
+    if (!near && d > .15 && Math.abs(wrap(Math.atan2(dx, dz) - g.heading)) > HALF_ANGLE) return false;
     if (segmentBlocked(g.x, g.z, px, pz, tallFootprints)) return false;
     if (crouched && segmentBlocked(g.x, g.z, px, pz, footprints)) return false;
     return true;
@@ -357,7 +366,7 @@ export function createStealth({ scene, guardTexture, footprints = [], tallFootpr
     it.p.set(x, 0, z);
     it.v.set(0, 0, 0);
     const point = new THREE.Vector3(x, 0, z);
-    if (it.kind === 'beaker') {
+    if (KINDS[it.kind].breaks) {
       it.state = 'gone';
       it.mesh.visible = false;
       spawnShards(point);
@@ -391,6 +400,12 @@ export function createStealth({ scene, guardTexture, footprints = [], tallFootpr
 
   // ---------- Public API ----------
   const api = {
+    // Back to the start: guards calm on their first waypoint, every throwable where it was first placed, nothing held.
+    reset() {
+      for (const g of guards) { const [x0, z0] = g.route[0], [x1, z1] = g.route[1]; Object.assign(g, { x: x0, z: z0, heading: Math.atan2(x1 - x0, z1 - z0), wp: 1, mode: 'walk', timer: 0, tx: x1, tz: z1, searchFor: 0, stuck: 0, ghost: false, dir: 1, sees: false, wary: 0 }); }
+      meter = 0; graceT = 0; promoted = false; heldItem = null;
+      for (const it of items) { it.state = 'world'; it.p.copy(it.home); it.v.set(0, 0, 0); it.mesh.position.copy(it.home); it.mesh.rotation.set(0, it.ry, 0); it.mesh.visible = true; }
+    },
     setActive(flags = {}) {
       for (const g of guards) {
         const on = !!flags[g.key];
@@ -411,22 +426,35 @@ export function createStealth({ scene, guardTexture, footprints = [], tallFootpr
       const range = (ctx.night ? RANGE_NIGHT : RANGE_DAY) * (ctx.soles ? SOLES_FACTOR : 1) * (1 + .1 * alarm);
       const speed = WALK_SPEED * (veteran ? VETERAN_SPEED : 1) * (1 + .15 * alarm);
 
-      let nearest = Infinity, searching = false, seen = false, close = false;
+      // ctx.noise: how far the player's footsteps carry right now, in metres (0 when still or crouched).
+      const noise = jammed || veteran ? 0 : ctx.noise || 0;
+      let nearest = Infinity, searching = false, seen = false, close = false, caller = null;
       for (const g of guards) {
         if (!g.active) continue;
+        g.wary = Math.max(0, (g.wary || 0) - dt);
+        const reach = range * (g.wary > 0 && !veteran ? WARY_RANGE : 1);
         stepGuard(g, dt, speed);
         g.sees = false;
         if (player) {
           const d = Math.hypot(player.x - g.x, player.z - g.z);
           if (d < nearest) nearest = d;
-          if (!jammed && canSee(g, player.x, player.z, range, crouched)) {
-            g.sees = true; seen = true;
-            if (!veteran || promoted) { if (g.mode !== 'chase') { g.mode = 'chase'; g.stuck = 0; } g.lastX = player.x; g.lastZ = player.z; g.lostT = 0; }
+          if (!jammed && canSee(g, player.x, player.z, reach, crouched)) {
+            g.sees = true; seen = true; g.wary = WARY_TIME;
+            if (!veteran || promoted) { if (g.mode !== 'chase') { g.mode = 'chase'; g.stuck = 0; caller = g; } g.lastX = player.x; g.lastZ = player.z; g.lostT = 0; }
             if (g.mode === 'chase' && d < CATCH_DIST) close = true;
+          } else if (d < noise && g.mode !== 'chase' && !segmentBlocked(g.x, g.z, player.x, player.z, tallFootprints)) {
+            // He hears footsteps: he turns and comes to look where they were.
+            g.lookX = player.x; g.lookZ = player.z; g.searchFor = 4; g.stuck = 0; g.ghost = false;
+            if (d <= STOP_SHORT * 2) { if (g.mode !== 'search') { g.mode = 'search'; g.timer = 0; } g.base = Math.atan2(player.x - g.x, player.z - g.z); }
+            else { const k = STOP_SHORT / d; g.tx = player.x + (g.x - player.x) * k; g.tz = player.z + (g.z - player.z) * k; g.mode = 'toPoint'; }
           }
         }
         if (g.mode === 'toPoint' || g.mode === 'search' || g.mode === 'chase') searching = true;
-        placeGuard(g, dt, ctx.camera, range, jammed);
+        placeGuard(g, dt, ctx.camera, reach, jammed);
+      }
+      // A guard who has just spotted the player calls the others nearby to where he saw them.
+      if (caller) for (const g of guards) if (g.active && g !== caller && g.mode !== 'chase' && Math.hypot(g.x - caller.x, g.z - caller.z) < CALL_DIST) {
+        g.lookX = caller.lastX; g.lookZ = caller.lastZ; g.tx = caller.lastX; g.tz = caller.lastZ; g.searchFor = 6; g.stuck = 0; g.ghost = false; g.mode = 'toPoint'; g.wary = WARY_TIME;
       }
       stepItems(dt);
       stepShards(dt);
@@ -547,6 +575,7 @@ export function createStealth({ scene, guardTexture, footprints = [], tallFootpr
       shards.dispose();
       for (const geo of geometries) geo.dispose();
       for (const m of materials) m.dispose();
+      for (const g of guards) g.anim.dispose();
       guards.length = 0;
       items.length = 0;
       heldItem = null;
