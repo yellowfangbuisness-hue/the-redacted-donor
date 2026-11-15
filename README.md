@@ -2,6 +2,8 @@
 
 A 3D detective game about organ trafficking: how people are recruited, matched and sold. No gore.
 
+**[Play it in your browser](https://yellowfangbuisness-hue.github.io/the-redacted-donor/)** (Chrome or Edge on a computer; nothing to download or install).
+
 ![The title screen](pitch/screenshots/01-title.png)
 
 Made for the Oakridge Hackathon. The whole game is a single web page drawn in an ink-noir style. It runs offline, in a browser, as a Mac app or from a Windows folder.
